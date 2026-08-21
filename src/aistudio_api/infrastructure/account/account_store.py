@@ -246,22 +246,31 @@ class AccountStore:
         self._save_registry(registry)
         return True
 
-    def update_account(self, account_id: str, name: str) -> AccountMeta | None:
-        """更新账号名称。"""
+    def update_account(
+        self,
+        account_id: str,
+        name: str | None = None,
+        email: str | None = None,
+    ) -> AccountMeta | None:
+        """更新账号显示名称和邮箱，不修改认证 cookie。"""
         registry = self._load_registry()
         if account_id not in registry.accounts:
             return None
-        registry.accounts[account_id].name = name
+        account = registry.accounts[account_id]
+        if name is not None:
+            account.name = name.strip() or account.name
+        if email is not None:
+            account.email = email.strip().lower() or None
         # 同步更新 meta.json
         account_dir = self._accounts_dir / account_id
         meta_path = account_dir / "meta.json"
         if meta_path.exists():
             meta_path.write_text(
-                json.dumps(registry.accounts[account_id].to_dict(), ensure_ascii=False, indent=2),
+                json.dumps(account.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         self._save_registry(registry)
-        return registry.accounts[account_id]
+        return account
 
     def get_auth_path(self, account_id: str) -> Path | None:
         """获取指定账号的 auth.json 路径。"""

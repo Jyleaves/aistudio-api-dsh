@@ -111,6 +111,11 @@ class AccountService:
         """删除账号。"""
         return self._store.delete_account(account_id)
 
-    def update_account(self, account_id: str, name: str) -> AccountMeta | None:
-        """更新账号名称。"""
-        return self._store.update_account(account_id, name)
+    def update_account(
+        self,
+        account_id: str,
+        name: str | None = None,
+        email: str | None = None,
+    ) -> AccountMeta | None:
+        """更新账号显示名称和邮箱。"""
+        return self._store.update_account(account_id, name=name, email=email)

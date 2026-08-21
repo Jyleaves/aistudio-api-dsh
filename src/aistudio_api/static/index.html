@@ -387,7 +387,8 @@
                       <td><span class="badge badge-green" x-show="a.id===activeId">激活</span><span
                           class="badge badge-gray" x-show="a.id!==activeId">待命</span></td>
                       <td><button class="btn btn-sm" x-show="a.id!==activeId"
-                          @click="activateAccount(a.id)">手动激活</button></td>
+                          @click="activateAccount(a.id)">手动激活</button>
+                        <button class="btn btn-sm" @click="openAccountEdit(a)">编辑</button></td>
                     </tr>
                   </template>
                   <tr x-show="!accountRows.length">
@@ -398,6 +399,33 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+  <!-- Account Edit Modal -->
+  <div class="modal-overlay" x-show="accountEdit.open" x-cloak @click.self="accountEdit.open=false"
+    x-transition.opacity>
+    <div class="modal" x-show="accountEdit.open" x-transition>
+      <div class="modal-head">
+        <span>编辑账号信息</span>
+        <button class="modal-close" @click="accountEdit.open=false">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label>账号名称</label>
+          <input class="modal-input" x-model="accountEdit.name" placeholder="Google 账号">
+        </div>
+        <div class="modal-field">
+          <label>邮箱</label>
+          <input class="modal-input" type="email" x-model="accountEdit.email" placeholder="user@gmail.com">
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" @click="accountEdit.open=false">取消</button>
+        <button class="btn btn-primary" :disabled="accountEdit.saving" @click="saveAccountEdit()">
+          <span x-show="!accountEdit.saving">保存</span>
+          <span x-show="accountEdit.saving">保存中...</span>
+        </button>
       </div>
     </div>
   </div>

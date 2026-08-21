@@ -39,7 +39,8 @@ class LoginStatusResponse(BaseModel):
 
 
 class UpdateAccountRequest(BaseModel):
-    name: str
+    name: str | None = None
+    email: str | None = None
 
 
 class ImportCookiesRequest(BaseModel):
@@ -166,8 +167,10 @@ async def update_account(
     req: UpdateAccountRequest,
     account_service=Depends(get_account_service),
 ):
-    """更新账号名称。"""
-    account = account_service.update_account(account_id, req.name)
+    """更新账号显示名称和邮箱。"""
+    if req.name is None and req.email is None:
+        raise HTTPException(status_code=400, detail="至少提供名称或邮箱")
+    account = account_service.update_account(account_id, name=req.name, email=req.email)
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在")
     return AccountResponse(
