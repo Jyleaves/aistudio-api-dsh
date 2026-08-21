@@ -11,7 +11,7 @@ function app() {
     cfg: { thinking: 'off', search: 'off', stream: 'on', temperature: 1.0, topP: 0.95, maxTokens: 32768, safety: 'on' },
     toast: { show: false, msg: '', t: null },
     cookieModal: { open: false, cookies: '', name: '', email: '', importing: false },
-    accountEdit: { open: false, id: '', name: '', email: '', saving: false },
+    accountEdit: { open: false, id: '', name: '', saving: false },
     loginInProgress: false,
 
     async init() {
@@ -171,17 +171,17 @@ function app() {
     async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
     async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
     openAccountEdit(account) {
-      this.accountEdit = { open: true, id: account.id, name: account.name || '', email: account.email || '', saving: false };
+      this.accountEdit = { open: true, id: account.id, name: account.name || '', saving: false };
     },
     async saveAccountEdit() {
       const edit = this.accountEdit;
-      if (!edit.name.trim() && !edit.email.trim()) { this.showToast('名称和邮箱不能同时为空'); return }
+      if (!edit.name.trim()) { this.showToast('账号名称不能为空'); return }
       edit.saving = true;
       try {
         const r = await this.apiFetch(`/accounts/${edit.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: edit.name.trim() || null, email: edit.email.trim() || null })
+          body: JSON.stringify({ name: edit.name.trim() })
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { this.showToast(d.detail || '保存失败'); return }
