@@ -25,3 +25,9 @@ data2/
 .antigravitycli
 chrome-headless
 
+# Local runtime files
+*.log
+cloakbrowser-windows-x64.zip
+cloakbrowser-chromium/
+start-aistudio-api.local.bat
+

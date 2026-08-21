@@ -22,6 +22,7 @@ from aistudio_api.application.api_service_common import (
 from aistudio_api.application.chat_service import cleanup_files, normalize_gemini_request
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.config import settings
 
 
 async def handle_gemini_generate_content(
@@ -39,7 +40,7 @@ async def handle_gemini_generate_content(
             await ensure_active_account(attempt)
             normalized = None
             try:
-                normalized = normalize_gemini_request(req, model_path)
+                normalized = normalize_gemini_request(req, model_path, tmp_dir=settings.tmp_dir)
                 logger.info(
                     "Gemini: model=%s, contents=%s, stream=%s, attempt=%d",
                     normalized["model"],

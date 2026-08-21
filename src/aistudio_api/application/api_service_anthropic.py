@@ -32,6 +32,7 @@ from aistudio_api.application.api_service_common import (
 from aistudio_api.application.chat_service import cleanup_files, normalize_anthropic_request
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.config import settings
 
 
 def _anthropic_tool_names(req: AnthropicMessageRequest) -> set[str]:
@@ -167,7 +168,11 @@ def _prepare_anthropic_function_calls(function_calls: list[dict] | None) -> list
 async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStudioClient):
     busy_lock = require_busy_lock()
 
-    normalized = normalize_anthropic_request(req, tool_context=runtime_state.anthropic_tool_context)
+    normalized = normalize_anthropic_request(
+        req,
+        tmp_dir=settings.tmp_dir,
+        tool_context=runtime_state.anthropic_tool_context,
+    )
     model = normalized["model"]
     cleanup_paths = list(normalized["cleanup_paths"])
     tool_names = _anthropic_tool_names(req)

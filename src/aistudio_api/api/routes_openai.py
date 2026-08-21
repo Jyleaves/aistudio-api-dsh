@@ -25,6 +25,7 @@ MODELS = [
     # Gemini 3 系列
     {"id": "gemini-3-flash-preview", "object": "model", "created": 1700000000, "owned_by": "google"},
     {"id": "gemini-3.5-flash", "object": "model", "created": 1700000000, "owned_by": "google"},
+    {"id": "gemini-3.7-flash", "object": "model", "created": 1700000000, "owned_by": "google"},
     {"id": "gemini-3.1-pro-preview", "object": "model", "created": 1700000000, "owned_by": "google"},
     {"id": "gemini-3.1-flash-lite", "object": "model", "created": 1700000000, "owned_by": "google"},
     {"id": "gemini-3.1-flash-image-preview", "object": "model", "created": 1700000000, "owned_by": "google"},

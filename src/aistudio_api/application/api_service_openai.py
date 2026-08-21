@@ -29,6 +29,7 @@ from aistudio_api.application.api_service_common import (
 from aistudio_api.application.chat_service import cleanup_files, normalize_chat_request, normalize_openai_tools
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.config import settings
 from aistudio_api.infrastructure.gateway.model_defaults import resolve_model_defaults
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent, AistudioPart
 
@@ -40,7 +41,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
     for attempt in range(MAX_RETRIES):
         async with busy_lock:
             await ensure_active_account(attempt)
-            normalized = normalize_chat_request(req.messages, req.model)
+            normalized = normalize_chat_request(req.messages, req.model, tmp_dir=settings.tmp_dir)
             model = normalized["model"]
             tmp_files = list(normalized["cleanup_paths"])
 
