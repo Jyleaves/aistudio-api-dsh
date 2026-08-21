@@ -9,7 +9,31 @@ setattr(playwright_module, "async_api", async_api_module)
 setattr(async_api_module, "async_playwright", lambda: None)
 
 from aistudio_api.infrastructure.account import login_service as login_module
-from aistudio_api.infrastructure.account.login_service import LoginService, LoginSession, LoginStatus
+from aistudio_api.infrastructure.account.login_service import (
+    LoginService,
+    LoginSession,
+    LoginStatus,
+    _extract_email_from_storage_state,
+    _normalize_email,
+)
+
+
+def test_normalize_email_extracts_address_from_google_page_text():
+    assert _normalize_email("Signed in as Jiayex2277@gmail.com") == "jiayex2277@gmail.com"
+    assert _normalize_email("no email here") is None
+
+
+def test_extract_email_from_storage_state_checks_metadata_without_requiring_email_key():
+    storage_state = {
+        "origins": [
+            {
+                "origin": "https://aistudio.google.com",
+                "localStorage": [{"name": "user", "value": "jiayex2277@gmail.com"}],
+            }
+        ],
+        "cookies": [],
+    }
+    assert _extract_email_from_storage_state(storage_state) == "jiayex2277@gmail.com"
 
 
 class FakePage:

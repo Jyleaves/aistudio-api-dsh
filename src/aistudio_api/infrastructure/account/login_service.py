@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 import sys
 import time
@@ -26,6 +27,36 @@ from aistudio_api.infrastructure.browser.browser_engine import (
 from aistudio_api.infrastructure.browser.camoufox_manager import CamoufoxManager
 
 logger = logging.getLogger("aistudio.login")
+
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+
+
+def _normalize_email(value: Any) -> str | None:
+    """Extract a plausible email address from text returned by Google pages."""
+    if value is None:
+        return None
+    match = _EMAIL_RE.search(str(value).replace("\\u0040", "@"))
+    return match.group(0).lower() if match else None
+
+
+def _extract_email_from_storage_state(storage_state: dict[str, Any]) -> str | None:
+    """Search non-secret metadata fields in Playwright storage state.
+
+    Cookie values are intentionally not inspected unless they already contain
+    an email-shaped value; this does not log or persist any cookie content.
+    """
+    candidates: list[Any] = []
+    for origin in storage_state.get("origins", []):
+        candidates.append(origin.get("origin"))
+        for item in origin.get("localStorage", []):
+            candidates.extend((item.get("name"), item.get("value")))
+    for cookie in storage_state.get("cookies", []):
+        candidates.extend((cookie.get("name"), cookie.get("value")))
+    for candidate in candidates:
+        email = _normalize_email(candidate)
+        if email:
+            return email
+    return None
 
 
 class LoginStatus(str, Enum):
@@ -824,13 +855,20 @@ class LoginService:
                     try:
                         detected_email = await page.evaluate("""
                             () => {
-                                // 尝试从页面获取邮箱
-                                const el = document.querySelector('[data-email]')
-                                    || document.querySelector('.gb_nb')
-                                    || document.querySelector('[aria-label*="@"]');
-                                return el ? (el.getAttribute('data-email') || el.textContent.trim()) : null;
+                                const text = (document.body?.innerText || "") + " "
+                                    + (document.documentElement?.innerHTML || "");
+                                const candidates = [
+                                    ...Array.from(document.querySelectorAll('[data-email], [data-identifier]'))
+                                        .flatMap((el) => [el.getAttribute('data-email'), el.getAttribute('data-identifier'), el.textContent]),
+                                    ...Array.from(document.querySelectorAll('[aria-label*="@"], [title*="@"]'))
+                                        .flatMap((el) => [el.getAttribute('aria-label'), el.getAttribute('title'), el.textContent]),
+                                    text,
+                                ].filter(Boolean);
+                                const match = candidates.join(" ").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);
+                                return match ? match[0] : null;
                             }
                         """)
+                        detected_email = _normalize_email(detected_email)
                     except Exception:
                         pass
                     login_done.set()
@@ -893,37 +931,39 @@ class LoginService:
             # 尝试从 Google 账号页面获取邮箱
             if detected_email is None:
                 try:
-                    # 导航到 Google 账号页面
+                    # networkidle 在 Google 账号页经常无法完成；DOM 已加载即可提取邮箱。
                     logger.info("尝试从 Google 账号页面获取邮箱")
-                    await page.goto("https://myaccount.google.com", wait_until="networkidle")
-                    await asyncio.sleep(2)  # 等待页面加载
+                    await page.goto(
+                        "https://myaccount.google.com",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    await page.wait_for_timeout(1500)
 
-                    # 从页面提取邮箱（优先匹配 *@gmail.com）
+                    # 从页面文本、属性和当前 URL 提取邮箱。
                     detected_email = await page.evaluate("""
                         () => {
-                            const text = document.body.innerText;
-                            // 直接匹配 *@gmail.com 邮箱
-                            const gmailRegex = /[a-zA-Z0-9._%+-]+@gmail\\.com/g;
-                            const matches = text.match(gmailRegex);
-                            return matches ? matches[0] : null;
+                            const text = (document.body?.innerText || "") + " "
+                                + (document.documentElement?.innerHTML || "") + " "
+                                + (document.documentElement?.outerHTML || "");
+                            const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);
+                            return match ? match[0] : null;
                         }
                     """)
+                    detected_email = _normalize_email(detected_email)
                 except Exception as e:
                     logger.warning("从 Google 账号页面获取邮箱失败: %s", e)
+                    # 即使导航超时，Google 通常已经填充了部分 DOM；继续从当前页读取。
+                    try:
+                        detected_email = _normalize_email(await page.evaluate(
+                            """() => (document.body?.innerText || "") + " " + (document.documentElement?.innerHTML || "")"""
+                        ))
+                    except Exception:
+                        pass
 
             # 如果还是没提取到邮箱，尝试从 storage state 的 origins 中提取
             if detected_email is None:
-                try:
-                    # 检查 localStorage 中是否有用户信息
-                    for origin in storage_state.get("origins", []):
-                        for item in origin.get("localStorage", []):
-                            if "email" in item.get("name", "").lower():
-                                detected_email = item.get("value")
-                                break
-                        if detected_email:
-                            break
-                except Exception:
-                    pass
+                detected_email = _extract_email_from_storage_state(storage_state)
 
             # 保存账号
             account_name = name or detected_email or "Google 账号"
