@@ -57,16 +57,21 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                 )
                 tools = None if req.tools is None else (normalize_openai_tools(req.tools) or [])
 
-                if req.tools is None:
+                # OpenAI clients such as pi-web always send their own function
+                # tools (bash/read/etc.). Keep those declarations, but still
+                # inject model-default built-ins such as Google Search unless
+                # the caller explicitly sends an empty tools array.
+                if not (req.tools is not None and len(req.tools) == 0):
                     from aistudio_api.infrastructure.gateway.request_rewriter import build_tools_from_names
 
                     model_defaults = resolve_model_defaults(model)
                     if model_defaults.default_tools:
-                        tools = build_tools_from_names(
+                        default_tools = build_tools_from_names(
                             model_defaults.default_tools,
                             model=model,
                             is_image_model=model_defaults.is_image_model,
                         )
+                        tools = (tools or []) + default_tools
 
                 if req.stream:
                     include_usage = True
