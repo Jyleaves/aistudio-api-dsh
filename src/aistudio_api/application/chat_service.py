@@ -700,9 +700,12 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                         thought_signature=part.thoughtSignature,
                     )
                 )
-                image_path = inline_data_to_file(part.inlineData.mimeType, part.inlineData.data, tmp_dir=tmp_dir)
-                content_images.append(image_path)
-                cleanup_paths.append(image_path)
+                # 图片仍需临时文件供 AI Studio 的图片捕获流程使用。
+                # PDF 等非图片媒体直接保留为 inlineData，避免被误送进图片流程。
+                if part.inlineData.mimeType.lower().startswith("image/"):
+                    image_path = inline_data_to_file(part.inlineData.mimeType, part.inlineData.data, tmp_dir=tmp_dir)
+                    content_images.append(image_path)
+                    cleanup_paths.append(image_path)
                 continue
             if part.fileData is not None:
                 raise ValueError("fileData is not supported yet")
