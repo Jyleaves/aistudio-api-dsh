@@ -1,21 +1,9 @@
 @echo off
 setlocal
 
-cd /d "%~dp0"
-
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found:
-    echo         %~dp0.venv
-    pause
-    exit /b 1
-)
-
-echo Starting aistudio-api on http://127.0.0.1:8090 ...
-echo Press Ctrl+C to stop the service.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-aistudio-api.ps1" -Port 8090
+set "EXITCODE=%ERRORLEVEL%"
 echo.
-
-".venv\Scripts\python.exe" "main.py" server --port 8090
-
-echo.
-echo aistudio-api stopped. Exit code: %ERRORLEVEL%
+echo aistudio-api stopped. Exit code: %EXITCODE%
 pause
+exit /b %EXITCODE%
