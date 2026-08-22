@@ -440,8 +440,8 @@
                       <td x-text="k.name"></td>
                       <td style="font-family:monospace" x-text="k.prefix+'...'" ></td>
                       <td x-text="fmtDate(k.created_at)"></td>
-                      <td><span class="badge" :class="k.active?'badge-green':'badge-gray'" x-text="k.active?'有效':'已撤销'"></span></td>
-                      <td><button class="btn btn-sm btn-danger" @click="revokeApiKey(k.id)" x-show="k.active">撤销</button></td>
+                      <td><span class="badge" :class="k.active?'badge-green':'badge-gray'" x-text="k.active?'有效':'已删除'"></span></td>
+                      <td><button class="btn btn-sm btn-danger" @click="revokeApiKey(k.id)" x-show="k.active">删除</button></td>
                     </tr>
                   </template>
                   <tr x-show="!apiKeys.length"><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">暂无 API Key</td></tr>

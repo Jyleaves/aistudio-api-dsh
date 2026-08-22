@@ -268,13 +268,13 @@ function app() {
       finally { this.apiKeyCreate.saving = false; }
     },
     async revokeApiKey(id) {
-      if (!confirm('确定撤销这个 API Key 吗？已使用它的客户端会立即失效。')) return;
+      if (!confirm('确定删除这个 API Key 吗？已使用它的客户端会立即失效。')) return;
       try {
         const r = await this.apiFetch(`/auth/api-keys/${id}/revoke`, { method: 'POST' });
         const d = await r.json().catch(() => ({}));
-        if (!r.ok) { this.showToast(d.detail || '撤销失败'); return; }
+        if (!r.ok) { this.showToast(d.detail || '删除失败'); return; }
         await this.loadApiKeys();
-        this.showToast('API Key 已撤销');
+        this.showToast('API Key 已删除');
       } catch (e) { this.showToast('网络错误'); }
     },
     async checkUpdate() {
