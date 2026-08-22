@@ -7,8 +7,12 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = Join-Path $root ".venv\Scripts\python.exe"
-$iscc = "C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
-if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 7\ISCC.exe" }
+$iscc = @(
+    "C:\Program Files (x86)\Inno Setup 7\ISCC.exe",
+    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    "C:\Program Files\Inno Setup 7\ISCC.exe",
+    "C:\Program Files\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if (-not (Test-Path $python)) {
     throw "Python virtual environment not found: $python"
