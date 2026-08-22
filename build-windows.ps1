@@ -7,12 +7,18 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = Join-Path $root ".venv\Scripts\python.exe"
-$iscc = @(
+$iscc = if ($env:ISCC_PATH -and (Test-Path $env:ISCC_PATH)) {
+    $env:ISCC_PATH
+} elseif (Get-Command ISCC.exe -ErrorAction SilentlyContinue) {
+    (Get-Command ISCC.exe).Source
+} else {
+    @(
     "C:\Program Files (x86)\Inno Setup 7\ISCC.exe",
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 7\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
 
 if (-not (Test-Path $python)) {
     throw "Python virtual environment not found: $python"
@@ -42,9 +48,10 @@ try {
         Copy-Item -Destination $bundledBrowserRoot -Recurse -Force
 
     if (-not $SkipInstaller) {
-        if (-not (Test-Path $iscc)) {
-            throw "Inno Setup compiler not found. Install Inno Setup 7 or use -SkipInstaller."
-        }
+    if (-not (Test-Path $iscc)) {
+        throw "Inno Setup compiler not found. Install Inno Setup 7 or use -SkipInstaller."
+    }
+    Write-Host "Using Inno Setup: $iscc"
         & $iscc installer.iss
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
     }
