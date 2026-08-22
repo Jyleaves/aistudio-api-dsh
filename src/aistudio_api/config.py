@@ -18,9 +18,7 @@ def ensure_env_file() -> None:
         return
     content = (
         "# AI Studio API local configuration\n"
-        "# API keys are created and revoked from the web UI; leave these blank here.\n"
-        "AISTUDIO_API_KEY=\n"
-        "AISTUDIO_API_KEYS=\n"
+        "# Runtime settings are managed from the web UI.\n"
     )
     try:
         env_path.write_text(content, encoding="utf-8")

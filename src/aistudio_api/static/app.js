@@ -4,7 +4,7 @@ function app() {
     view: 'accounts', sidebarOpen: false, configOpen: false, openSelect: null,
     stats: {}, rotationMode: 'round_robin', rotCfg: { mode: 'round_robin', cooldown: 60 },
     accounts: [], rotationAccounts: {}, activeId: '', activeAccount: {},
-    apiKeys: [], apiKeyReveal: { open: false, name: '', key: '' },
+    apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
     updateInfo: { checking: false, updating: false, checked: false, available: false, dirty: false, error: '' },
     settings: {}, settingsSaving: false,
@@ -218,11 +218,14 @@ function app() {
       } catch (e) { console.warn('Rotation refresh failed', e); }
     },
     async loadApiKeys() {
+      const requestId = ++this.apiKeysRequestId;
       try {
         const r = await this.apiFetch(`/auth/api-keys?t=${Date.now()}`, { cache: 'no-store' });
         if (!r.ok) return;
         const d = await r.json();
-        this.apiKeys = d.keys || [];
+        // Ignore an older request that started before a newer refresh (for
+        // example, the initial page load racing with a post-delete refresh).
+        if (requestId === this.apiKeysRequestId) this.apiKeys = d.keys || [];
       } catch (e) { console.warn('API key list failed', e); }
     },
     async loadSettings() {
@@ -273,6 +276,9 @@ function app() {
         const r = await this.apiFetch(`/auth/api-keys/${id}/revoke`, { method: 'POST' });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { this.showToast(d.detail || '删除失败'); return; }
+        // Update the visible list immediately; the server refresh below keeps
+        // the UI consistent with the persisted store after the request ends.
+        this.apiKeys = this.apiKeys.filter(item => item.id !== id);
         await this.loadApiKeys();
         this.showToast('API Key 已删除');
       } catch (e) { this.showToast('网络错误'); }

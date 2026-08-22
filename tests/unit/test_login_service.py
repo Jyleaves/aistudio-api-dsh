@@ -34,6 +34,21 @@ def test_api_key_store_generates_and_supports_rotation(tmp_path, monkeypatch):
     assert not store.verify(second)
 
 
+def test_deleted_environment_key_is_not_reimported(tmp_path, monkeypatch):
+    from aistudio_api.infrastructure.auth.api_key_store import ApiKeyStore
+
+    legacy_key = "sk-legacy-test-key"
+    monkeypatch.setattr(login_module.settings, "api_keys", frozenset({legacy_key}))
+    store = ApiKeyStore(tmp_path / "api_keys.json")
+
+    first = store.list_public()
+    assert len(first) == 1
+    assert first[0]["name"] == "环境变量 API Key"
+
+    store.revoke(first[0]["id"])
+    assert store.list_public() == []
+
+
 def test_normalize_email_extracts_address_from_google_page_text():
     assert _normalize_email("Signed in as Jiayex2277@gmail.com") == "jiayex2277@gmail.com"
     assert _normalize_email("no email here") is None

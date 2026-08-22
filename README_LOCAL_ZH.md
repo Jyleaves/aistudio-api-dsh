@@ -15,7 +15,6 @@ dsh 插件安装：
 
 ```powershell
 dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
-$env:AISTUDIO_API_KEY = "从反代 API Key 管理页面复制的 Key"
 ```
 
 自定义提供方填写：Provider ID 为 `gemini-aistudio`，显示名称为 `Google AI Studio`，API 地址为 `http://127.0.0.1:8090/v1`，协议为 `openai-completions`，API 密钥填写反代 Key。模型 `gemini-3.7-flash` 使用上下文窗口 `1000000`、最大输出 `65536`，启用 reasoning，输入模态选择 text 和 image。反代其他可选配置统一在管理页面“设置”路由修改。

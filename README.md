@@ -38,12 +38,6 @@ API Key 管理支持同时保留多个有效 Key。创建新 Key 不会使旧 Ke
 dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
 ```
 
-如果使用本地开发副本，也可以把命令中的 GitHub 地址替换为本地插件目录。将“API Key 管理”页面创建的 Key 设置为 dsh 进程可见的环境变量：
-
-```powershell
-$env:AISTUDIO_API_KEY = "在 API Key 管理页面创建的 Key"
-```
-
 重启 dsh。插件 provider ID 是 `aistudio-gemini`，普通 Gemini 请求走原生 Gemini 接口；带有 dsh 函数工具的请求走反代 OpenAI 兼容接口，以保证 `read`、`edit`、`bash` 等工具调用稳定完成。
 
 ## 3. 在 dsh 设置中添加提供方

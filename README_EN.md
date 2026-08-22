@@ -200,7 +200,6 @@ Configure via environment variables or a `.env` file:
 | `AISTUDIO_PORT` | `8080` | API service port |
 | `AISTUDIO_CAMOUFOX_PORT` | `9222` | Camoufox debug port |
 | `AISTUDIO_PROXY` | None | Browser proxy address |
-| `AISTUDIO_API_KEY` | None | API authentication key (enables Bearer / X-API-Key auth when set) |
 | `AISTUDIO_DEFAULT_TEXT_MODEL` | `gemma-4-31b-it` | Default chat model |
 | `AISTUDIO_DEFAULT_IMAGE_MODEL` | `gemini-3.1-flash-image-preview` | Default image model |
 | `AISTUDIO_CAMOUFOX_HEADLESS` | `1` | Run browser in headless mode |

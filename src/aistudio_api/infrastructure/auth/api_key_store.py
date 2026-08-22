@@ -68,12 +68,15 @@ class ApiKeyStore:
         }
 
     def ensure(self) -> str | None:
-        """Initialize the store and import explicitly configured legacy keys.
+        """Initialize the store and migrate explicitly configured legacy keys.
 
-        A first run intentionally creates no API secret. Users create one in
-        the web UI, where the plaintext is shown exactly once.
+        Environment keys are imported only when the store is created for the
+        first time. This is a one-time migration: if a user later deletes an
+        imported environment key in the UI, a subsequent list request must
+        not recreate it from the unchanged legacy environment variable.
         """
         with self._lock:
+            store_is_new = not self.path.exists()
             data = self._load()
             changed = False
             active_keys = [item for item in data["keys"] if not item.get("revoked_at")]
@@ -82,7 +85,7 @@ class ApiKeyStore:
                 changed = True
             known_hashes = {item.get("hash") for item in data["keys"]}
             existing = [key for key in settings.api_keys if not _is_placeholder(key)]
-            if existing:
+            if store_is_new and existing:
                 for key in sorted(existing):
                     if _hash_key(key) not in known_hashes:
                         data["keys"].append(self._record(key, "环境变量 API Key"))
