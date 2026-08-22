@@ -9,9 +9,24 @@ $ErrorActionPreference = "Stop"
 $root = (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $python = Join-Path $root ".venv\Scripts\python.exe"
 
+Write-Host "[aistudio-api] Project: $root" -ForegroundColor DarkGray
+Write-Host "[aistudio-api] Checking port $Port ..." -ForegroundColor DarkGray
+
 function Get-ListenerProcessIds {
-    @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique)
+    $ids = @(
+        Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    )
+    if ($ids.Count -eq 0) {
+        # Get-NetTCPConnection can return no data for a listener owned by a
+        # different elevation context. netstat is a compatible fallback.
+        foreach ($line in @(netstat -ano -p tcp 2>$null)) {
+            if ($line -match "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+                $ids += [int]$matches[1]
+            }
+        }
+    }
+    @($ids | Sort-Object -Unique)
 }
 
 function Get-ProcessTree([int[]]$ids) {
@@ -22,7 +37,11 @@ function Get-ProcessTree([int[]]$ids) {
     }
     while ($queue.Count -gt 0) {
         $id = $queue.Dequeue()
-        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$id" -ErrorAction SilentlyContinue)
+        try {
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$id" -ErrorAction Stop)
+        } catch {
+            $children = @()
+        }
         foreach ($child in $children) {
             $childId = [int]$child.ProcessId
             if ($all.Add($childId)) { $queue.Enqueue($childId) }
@@ -33,13 +52,18 @@ function Get-ProcessTree([int[]]$ids) {
 
 function Get-ProcessInfo([int[]]$ids) {
     foreach ($id in $ids) {
-        $info = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue
+        try {
+            $info = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop
+        } catch {
+            $info = $null
+        }
         if ($info) { $info }
     }
 }
 
 $listenerIds = Get-ListenerProcessIds
 if ($listenerIds.Count -gt 0) {
+    Write-Host "[aistudio-api] Port $Port is already in use; inspecting the existing process ..." -ForegroundColor Yellow
     $treeIds = Get-ProcessTree $listenerIds
     $processes = @(Get-ProcessInfo $treeIds)
     $ownProcess = $processes | Where-Object {
@@ -52,6 +76,7 @@ if ($listenerIds.Count -gt 0) {
 
     if (-not $ownProcess) {
         Write-Host "Port $Port is already occupied by another process." -ForegroundColor Red
+        Write-Host "The process details are unavailable or it is not an aistudio-api instance." -ForegroundColor Yellow
         $processes | Select-Object ProcessId,Name,CommandLine | Format-Table -Wrap
         Write-Host "The script will not stop an unrelated process."
         exit 1
