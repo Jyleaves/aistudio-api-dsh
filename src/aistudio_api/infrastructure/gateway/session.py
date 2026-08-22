@@ -266,6 +266,14 @@ class BrowserSession:
         await self._run_sync(self._close_sync)
         self._executor.shutdown(wait=True, cancel_futures=False)
 
+    async def release_context(self) -> None:
+        """关闭当前浏览器上下文但保留执行器，释放账号 profile 文件锁。
+
+        下次请求会自动重新启动浏览器。用于删除/退出活跃账号前解锁其
+        持久化 profile 目录（Windows 上被占用的目录无法删除）。
+        """
+        await self._run_sync(self._close_sync)
+
     async def send_hooked_request(self, *, body: str, timeout_ms: int) -> tuple[int, bytes]:
         return await self._run_sync(self._send_hooked_request_sync, body, timeout_ms)
 
@@ -650,6 +658,17 @@ class BrowserSession:
         else:
             self._browser, self._cf, self._playwright = sync_launch_browser()
             self._ctx = self._browser.new_context(**build_browser_context_options())
+
+        # 系统 Chrome/Edge 二进制在 CDP 附加时 navigator.webdriver 为 true；
+        # 统一注入抹平（CloakBrowser 二进制天然为 false，注入无害）。
+        try:
+            from aistudio_api.infrastructure.browser.browser_engine import (
+                _HIDE_WEBDRIVER_SCRIPT,
+            )
+
+            self._ctx.add_init_script(_HIDE_WEBDRIVER_SCRIPT)
+        except Exception:
+            pass
 
         self._hook_page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         sync_maximize_page_window(self._hook_page)

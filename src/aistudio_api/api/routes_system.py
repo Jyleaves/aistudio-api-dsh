@@ -29,7 +29,8 @@ class SettingsPayload(BaseModel):
     browser_executable_path: str | None = None
     browser_chromium_sandbox: bool | None = None
     browser_python: str | None = None
-    login_browser_port: int | None = None
+    login_browser: str | None = None
+    login_browser_channel: str | None = None
     auth_file: str | None = None
     api_key_store_path: str | None = None
     proxy_url: str | None = None
@@ -60,7 +61,8 @@ _SETTINGS_FIELDS = {
     "browser_executable_path": ("AISTUDIO_BROWSER_EXECUTABLE", "str"),
     "browser_chromium_sandbox": ("AISTUDIO_CHROMIUM_SANDBOX", "bool"),
     "browser_python": ("AISTUDIO_BROWSER_PYTHON", "str"),
-    "login_browser_port": ("AISTUDIO_LOGIN_BROWSER_PORT", "int"),
+    "login_browser": ("AISTUDIO_LOGIN_BROWSER", "str"),
+    "login_browser_channel": ("AISTUDIO_LOGIN_BROWSER_CHANNEL", "str"),
     "auth_file": ("AISTUDIO_AUTH_FILE", "str"),
     "api_key_store_path": ("AISTUDIO_API_KEY_STORE", "str"),
     "proxy_url": ("AISTUDIO_PROXY", "str"),
@@ -89,8 +91,9 @@ def _settings_snapshot() -> dict:
     values = {field: getattr(settings, field) for field in _SETTINGS_FIELDS}
     values["browser_executable_path"] = values["browser_executable_path"] or ""
     values["browser_channel"] = values["browser_channel"] or ""
-    values["proxy_url"] = values["proxy_url"] or ""
     values["browser_python"] = values["browser_python"] or ""
+    values["login_browser_channel"] = values["login_browser_channel"] or ""
+    values["proxy_url"] = values["proxy_url"] or ""
     values["auth_file"] = values["auth_file"] or ""
     return {"settings": values, "restart_required": True}
 
@@ -130,11 +133,13 @@ async def save_settings(payload: SettingsPayload):
     raw = payload.dict(exclude_none=True)
     if not raw:
         return _settings_snapshot()
-    if raw.get("browser_engine") not in (None, "chromium", "camoufox"):
-        raise HTTPException(400, detail="browser_engine 只能是 chromium 或 camoufox")
+    if raw.get("browser_engine") not in (None, "chromium", "cloakbrowser", "camoufox"):
+        raise HTTPException(400, detail="browser_engine 只能是 chromium、cloakbrowser 或 camoufox")
+    if raw.get("login_browser") not in (None, "auto", "system", "cloakbrowser"):
+        raise HTTPException(400, detail="login_browser 只能是 auto、system 或 cloakbrowser")
     if raw.get("account_rotation_mode") not in (None, "round_robin", "lru", "least_rl"):
         raise HTTPException(400, detail="account_rotation_mode 无效")
-    for name in ("port", "browser_port", "login_browser_port", "timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
+    for name in ("port", "browser_port", "timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
         if name in raw and raw[name] < 1:
             raise HTTPException(400, detail=f"{name} 必须大于 0")
     try:
@@ -143,6 +148,8 @@ async def save_settings(payload: SettingsPayload):
             if field in {"accounts_dir", "tmp_dir", "dump_raw_response_dir", "browser_executable_path", "auth_file", "api_key_store_path"}:
                 value = resolve_project_path(value, "") if value else None
             if field == "browser_channel" and value == "":
+                value = None
+            if field == "login_browser_channel" and value == "":
                 value = None
             if field == "proxy_url" and value == "":
                 value = None

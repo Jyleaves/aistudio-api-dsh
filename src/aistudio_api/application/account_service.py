@@ -53,6 +53,10 @@ class AccountService:
         """获取登录状态。"""
         return self._login.get_status(session_id)
 
+    async def clear_login_profile(self) -> None:
+        """清除持久化登录档案（Google 账号选择器列表）。"""
+        await self._login.clear_login_profile()
+
     async def activate_account(
         self,
         account_id: str,
@@ -113,6 +117,46 @@ class AccountService:
     def delete_account(self, account_id: str) -> bool:
         """删除账号。"""
         return self._store.delete_account(account_id)
+
+    async def logout_account(
+        self,
+        account_id: str,
+        browser_session: Any = None,
+    ) -> dict | None:
+        """退出登录：删除本地账号记录，并按需清除本机 Google 登录档案。
+
+        最后一个账号被移除时顺带清空登录档案（login-profile），这样下次
+        "添加账号"不会再列出已退出的账号；还有其他账号时保留档案，避免
+        影响它们的一键授权。活跃账号的 profile 正被后台浏览器占用时，
+        先关闭后台浏览器释放文件锁再删除。
+        """
+        account = self._store.get_account(account_id)
+        if account is None:
+            return None
+        active = self._store.get_active_account()
+        if browser_session is not None and active is not None and active.id == account_id:
+            try:
+                await browser_session.release_context()
+                logger.info("已释放后台浏览器以删除账号 %s", account_id)
+            except Exception as exc:
+                logger.warning("释放后台浏览器失败，将尝试延后清理账号目录: %s", exc)
+        self._store.delete_account(account_id)
+        remaining = len(self._store.list_accounts())
+        profile_cleared = False
+        message = "已退出登录并删除账号记录"
+        if remaining == 0:
+            try:
+                await self._login.clear_login_profile()
+                profile_cleared = True
+                message = "已退出登录并删除账号记录，同时清除本机 Google 登录档案"
+            except RuntimeError as exc:
+                message = f"已退出登录并删除账号记录；{exc}"
+        return {
+            "account_id": account_id,
+            "remaining_accounts": remaining,
+            "profile_cleared": profile_cleared,
+            "message": message,
+        }
 
     def update_account(
         self,

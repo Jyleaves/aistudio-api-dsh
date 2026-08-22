@@ -99,8 +99,10 @@ class AccountStore:
         self._migrate_legacy_if_needed()
 
     def _ensure_dirs(self) -> None:
-        """确保目录存在。"""
+        """确保目录存在，并清理上次删除账号时被占用的残留目录。"""
         self._accounts_dir.mkdir(parents=True, exist_ok=True)
+        for leftover in self._accounts_dir.glob(".deleted-*"):
+            shutil.rmtree(leftover, ignore_errors=True)
 
     def _migrate_legacy_if_needed(self) -> None:
         """如果 accounts 目录为空且存在 data/auth.json，自动迁移。"""
@@ -234,19 +236,30 @@ class AccountStore:
         return meta
 
     def delete_account(self, account_id: str) -> bool:
-        """删除账号，返回是否成功。"""
+        """删除账号，返回是否成功。
+
+        Windows 上账号 profile 可能仍被后台浏览器进程占用。先从注册表
+        移除账号（列表立即更新），再尝试删除目录；删不掉时改名成
+        ``.deleted-<id>`` 延后处理，下次启动时自动清理。
+        """
         registry = self._load_registry()
         if account_id not in registry.accounts:
             return False
-        # 删除目录
-        account_dir = self._accounts_dir / account_id
-        if account_dir.is_dir():
-            shutil.rmtree(account_dir)
-        # 从注册表移除
         del registry.accounts[account_id]
         if registry.active_account_id == account_id:
             registry.active_account_id = next(iter(registry.accounts), None)
         self._save_registry(registry)
+
+        account_dir = self._accounts_dir / account_id
+        if account_dir.is_dir():
+            try:
+                shutil.rmtree(account_dir)
+            except OSError:
+                try:
+                    account_dir.rename(self._accounts_dir / f".deleted-{account_id}")
+                except OSError:
+                    # 改名也失败（目录仍被占用），留给下次启动清理。
+                    pass
         return True
 
     def update_account(

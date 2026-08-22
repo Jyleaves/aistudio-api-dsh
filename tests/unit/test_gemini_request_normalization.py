@@ -1,6 +1,8 @@
 import pytest
 
 from aistudio_api.api.schemas import GeminiContent, GeminiGenerateContentRequest, GeminiGenerationConfig, GeminiPart
+import tempfile
+
 from aistudio_api.application.chat_service import normalize_gemini_request, normalize_openai_tools
 from aistudio_api.api.schemas import ChatRequest
 from aistudio_api.infrastructure.gateway.wire_types import AistudioImageOutputMode
@@ -30,7 +32,9 @@ def test_normalize_gemini_request_exposes_generation_config_overrides():
         ),
     )
 
-    normalized = normalize_gemini_request(req, "models/gemini-3.1-flash-image-preview")
+    normalized = normalize_gemini_request(
+        req, "models/gemini-3.1-flash-image-preview", tmp_dir=tempfile.gettempdir()
+    )
 
     assert normalized["generation_config_overrides"] == {
         "stop_sequences": ["6"],
@@ -84,7 +88,9 @@ def test_normalize_gemini_request_maps_official_image_generation_fields():
         }
     )
 
-    normalized = normalize_gemini_request(req, "models/gemini-3.1-flash-image-preview")
+    normalized = normalize_gemini_request(
+        req, "models/gemini-3.1-flash-image-preview", tmp_dir=tempfile.gettempdir()
+    )
 
     assert normalized["tools"] == [[None, None, None, [None, [[], []]]]]
     assert normalized["generation_config_overrides"] == {

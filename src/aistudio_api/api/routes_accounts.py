@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from aistudio_api.api.dependencies import get_account_service, get_runtime_state
+from aistudio_api.api.dependencies import get_account_service, get_runtime_state, get_runtime_state
 from aistudio_api.infrastructure.account.cookie_parser import parse_cookie_string
 import logging
 
@@ -63,7 +63,10 @@ async def login_start(
     account_service=Depends(get_account_service),
 ):
     """启动 Google 登录流程。"""
-    session_id = await account_service.start_login(req.name)
+    try:
+        session_id = await account_service.start_login(req.name)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return LoginStartResponse(session_id=session_id)
 
 
@@ -83,6 +86,18 @@ async def login_status(
         email=session.email,
         error=session.error,
     )
+
+
+@router.post("/login-profile/clear")
+async def clear_login_profile(
+    account_service=Depends(get_account_service),
+):
+    """清除本机 Google 登录档案（添加账号窗口里记住的账号列表）。"""
+    try:
+        await account_service.clear_login_profile()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"ok": True, "message": "已清除登录档案；下次添加账号需重新登录"}
 
 
 @router.get("", response_model=list[AccountResponse])
@@ -153,12 +168,35 @@ async def activate_account(
 async def delete_account(
     account_id: str,
     account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
 ):
     """删除账号。"""
+    active = account_service.get_active_account()
+    if active is not None and active.id == account_id:
+        browser_session = runtime_state.client._session if runtime_state.client else None
+        if browser_session is not None:
+            try:
+                await browser_session.release_context()
+            except Exception as e:
+                log.warning("删除账号前释放后台浏览器失败: %s", e)
     success = account_service.delete_account(account_id)
     if not success:
         raise HTTPException(status_code=404, detail="账号不存在")
     return {"ok": True}
+
+
+@router.post("/{account_id}/logout")
+async def logout_account(
+    account_id: str,
+    account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
+):
+    """退出登录：删除账号记录；最后一个账号同时清除本机 Google 登录档案。"""
+    browser_session = runtime_state.client._session if runtime_state.client else None
+    result = await account_service.logout_account(account_id, browser_session)
+    if result is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    return result
 
 
 @router.put("/{account_id}", response_model=AccountResponse)

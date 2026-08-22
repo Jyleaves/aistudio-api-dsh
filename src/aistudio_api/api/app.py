@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
 
     # 初始化账号管理服务
     account_store = AccountStore()
-    login_service = LoginService(port=settings.login_browser_port)
+    login_service = LoginService()
     account_service = AccountService(account_store, login_service)
     runtime_state.account_service = account_service
 

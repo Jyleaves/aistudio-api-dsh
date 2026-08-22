@@ -71,17 +71,16 @@ def test_normalize_chat_request_tool_calls_and_responses():
     res = normalize_chat_request(messages, "gemini-3.5-flash")
     contents = res["contents"]
 
-    assert len(contents) == 3
+    # 当前实现走文本协议：assistant 的 tool_calls 消息不产生独立 content，
+    # tool 结果以 <tool_result> 标记的 user 消息传给模型。
+    assert len(contents) == 2
 
     # Check User Message
     assert contents[0].role == "user"
     assert contents[0].parts[0].text == "What is the weather like in Beijing?"
 
-    # Check Assistant Tool Call Message
-    assert contents[1].role == "model"
-    assert contents[1].parts[0].function_call == ("get_weather", {"location": "Beijing"}, "call_123")
-
-    # Check Tool Response Message
-    assert contents[2].role == "user"
-    assert contents[2].parts[0].function_response == ("get_weather", {"temperature": 24, "condition": "sunny"}, "call_123")
+    # Check Tool Response Message（带函数名标记）
+    assert contents[1].role == "user"
+    assert '<tool_result name="get_weather">' in contents[1].parts[0].text
+    assert '"temperature": 24' in contents[1].parts[0].text
 

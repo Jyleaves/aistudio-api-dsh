@@ -167,10 +167,10 @@ def test_modify_body_applies_model_safety_defaults():
 
     body = json.loads(rewritten)
     assert body[2] == [
-        [None, None, 7, 4],
-        [None, None, 8, 4],
-        [None, None, 9, 4],
-        [None, None, 10, 4],
+        [None, None, 7, 5],
+        [None, None, 8, 5],
+        [None, None, 9, 5],
+        [None, None, 10, 5],
     ]
 
 
@@ -179,7 +179,7 @@ def test_modify_body_applies_image_model_defaults():
         [
             "models/original",
             [[[[None, "old"]], "user"]],
-            [[None, None, 7, 4]],
+            [[None, None, 7, 5]],
             [None] * 27,
             "!snap",
             None,
@@ -247,7 +247,7 @@ def test_modify_body_can_override_safety_settings():
         prompt="hello",
         safety_settings=[
             [None, None, 7, 1],
-            [None, None, 8, 4],
+            [None, None, 8, 5],
             [None, None, 9, 3],
             [None, None, 10, 2],
         ],
@@ -256,7 +256,7 @@ def test_modify_body_can_override_safety_settings():
     body = json.loads(rewritten)
     assert body[2] == [
         [None, None, 7, 1],
-        [None, None, 8, 4],
+        [None, None, 8, 5],
         [None, None, 9, 3],
         [None, None, 10, 2],
     ]

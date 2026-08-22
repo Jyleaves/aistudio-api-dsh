@@ -22,16 +22,16 @@ def test_api_key_store_generates_and_supports_rotation(tmp_path, monkeypatch):
     from aistudio_api.infrastructure.auth.api_key_store import ApiKeyStore
 
     monkeypatch.setattr(login_module.settings, "api_keys", frozenset())
-    monkeypatch.setattr(ApiKeyStore, "_persist_initial_env", lambda self, secret: None)
     store = ApiKeyStore(tmp_path / "api_keys.json")
-    generated = store.ensure()
-    assert generated and generated.startswith("sk-aistudio-")
-    assert store.verify(generated)
-    created, second = store.create("test key")
-    assert created["name"] == "test key"
-    assert store.verify(second)
+    created, secret = store.create("test key")
+    assert secret.startswith("sk-aistudio-")
+    assert store.verify(secret)
+    rotated, rotated_secret = store.rotate("rotated key")
+    assert store.verify(rotated_secret)
     store.revoke(created["id"])
-    assert not store.verify(second)
+    assert not store.verify(secret)
+    store.revoke(rotated["id"])
+    assert not store.verify(rotated_secret)
 
 
 def test_deleted_environment_key_is_not_reimported(tmp_path, monkeypatch):
@@ -70,18 +70,22 @@ def test_extract_email_from_storage_state_checks_metadata_without_requiring_emai
 class FakePage:
     def __init__(self, *, close_on_goto: bool = False) -> None:
         self.url = ""
+        self.main_frame = types.SimpleNamespace(url="")
         self._handlers: dict[str, list] = {}
         self._close_on_goto = close_on_goto
 
     def on(self, event: str, callback) -> None:
         self._handlers.setdefault(event, []).append(callback)
 
-    async def goto(self, url: str, wait_until: str | None = None) -> None:
+    async def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None) -> None:
         self.url = url
         if self._close_on_goto:
             await self.emit("close")
 
-    async def evaluate(self, script: str):
+    async def evaluate(self, script: str, *args):
+        return None
+
+    async def wait_for_timeout(self, milliseconds: float) -> None:
         return None
 
     async def emit(self, event: str, *args) -> None:
@@ -94,6 +98,7 @@ class FakePage:
 class FakeContext:
     def __init__(self, page: FakePage) -> None:
         self._page = page
+        self.pages: list[FakePage] = []
         self._handlers: dict[str, list] = {}
 
     def on(self, event: str, callback) -> None:
@@ -104,6 +109,9 @@ class FakeContext:
 
     async def storage_state(self) -> dict:
         return {"cookies": [], "origins": []}
+
+    async def close(self) -> None:
+        return None
 
 
 class FakeBrowser:
@@ -163,12 +171,16 @@ class FakeAccountStore:
 def test_login_session_fails_immediately_when_browser_window_is_closed(monkeypatch):
     page = FakePage(close_on_goto=True)
     context = FakeContext(page)
-    browser = FakeBrowser(context)
-    manager = FakeManager(browser)
     store = FakeAccountStore()
 
-    monkeypatch.setattr(login_module, "CamoufoxManager", lambda port, headless: manager)
-    monkeypatch.setattr(login_module, "describe_browser_backend", lambda: "camoufox")
+    async def fake_launch_login_context(*, headless, profile_dir):
+        return types.SimpleNamespace(
+            context=context, playwright=FakePlaywright(), backend="system:chrome"
+        )
+
+    monkeypatch.setattr(login_module, "async_launch_login_context", fake_launch_login_context)
+    monkeypatch.setattr(login_module, "is_camoufox_engine", lambda: False)
+    monkeypatch.setattr(login_module, "describe_browser_backend", lambda: "chromium")
     monkeypatch.setattr(login_module, "build_browser_context_options", lambda headless=None: {})
 
     async def fake_maximize_page_window(page, *, headless):
@@ -201,3 +213,131 @@ def test_login_session_fails_immediately_when_browser_window_is_closed(monkeypat
     assert session.status == LoginStatus.FAILED
     assert session.error == "登录窗口已关闭"
     assert store.saved is False
+
+
+def test_build_login_url_uses_addsession_to_keep_account_chooser():
+    service = LoginService()
+    url = service._build_login_url()
+    assert url.startswith("https://accounts.google.com/AddSession?")
+    assert "continue=https%3A%2F%2Faistudio.google.com" in url
+
+    localized = service._build_login_url(ui_locale="zh-CN")
+    assert "hl=zh-CN" in localized
+
+
+def test_start_login_rejects_second_concurrent_login():
+    service = LoginService()
+    assert service._login_lock.locked() is False
+
+    async def scenario():
+        await service._login_lock.acquire()
+        try:
+            store = FakeAccountStore()
+            await service.start_login(store)
+        finally:
+            service._login_lock.release()
+
+    try:
+        asyncio.run(scenario())
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "已有登录窗口打开" in str(exc)
+
+
+def test_clear_login_profile_removes_dir_and_respects_lock(tmp_path, monkeypatch):
+    profile = tmp_path / "login-profile"
+    profile.mkdir()
+    (profile / "Default").mkdir()
+    monkeypatch.setattr(login_module.settings, "login_profile_dir", str(profile))
+    service = LoginService()
+
+    asyncio.run(service.clear_login_profile())
+    assert not profile.exists()
+
+    # 登录窗口打开中时拒绝清除
+    profile.mkdir()
+
+    async def locked_scenario():
+        await service._login_lock.acquire()
+        try:
+            await service.clear_login_profile()
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as exc:
+            assert "登录窗口打开中" in str(exc)
+        finally:
+            service._login_lock.release()
+
+    asyncio.run(locked_scenario())
+    assert profile.exists()
+
+
+def test_logout_account_clears_profile_only_for_last_account(monkeypatch, tmp_path):
+    from aistudio_api.application.account_service import AccountService
+    from aistudio_api.infrastructure.account.account_store import AccountMeta
+
+    cleared: list[str] = []
+
+    class FakeStore:
+        def __init__(self, accounts):
+            self._accounts = {a.id: a for a in accounts}
+            self.active_id = accounts[0].id if accounts else None
+
+        def get_account(self, account_id):
+            return self._accounts.get(account_id)
+
+        def get_active_account(self):
+            return self._accounts.get(self.active_id)
+
+        def delete_account(self, account_id):
+            return self._accounts.pop(account_id, None) is not None
+
+        def list_accounts(self):
+            return list(self._accounts.values())
+
+    class FakeLogin:
+        async def clear_login_profile(self):
+            cleared.append("cleared")
+
+    def meta(account_id):
+        return AccountMeta(
+            id=account_id,
+            name=account_id,
+            email=f"{account_id}@example.com",
+            created_at="2026-01-01T00:00:00",
+            last_used=None,
+        )
+
+    service = AccountService(FakeStore([meta("a1"), meta("a2")]), FakeLogin())
+    result = asyncio.run(service.logout_account("a1"))
+    assert result["remaining_accounts"] == 1
+    assert result["profile_cleared"] is False
+    assert cleared == []
+
+    result = asyncio.run(service.logout_account("a2"))
+    assert result["remaining_accounts"] == 0
+    assert result["profile_cleared"] is True
+    assert cleared == ["cleared"]
+
+    assert asyncio.run(service.logout_account("missing")) is None
+
+
+def test_delete_account_survives_locked_profile_dir(tmp_path, monkeypatch):
+    from aistudio_api.infrastructure.account.account_store import AccountStore
+
+    store = AccountStore(tmp_path)
+    meta = store.save_account(
+        name="locked", email="locked@example.com",
+        storage_state={"cookies": [], "origins": []},
+    )
+    assert store.get_account(meta.id) is not None
+
+    def locked_rmtree(path, *args, **kwargs):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(
+        "aistudio_api.infrastructure.account.account_store.shutil.rmtree", locked_rmtree
+    )
+    # Windows 上 profile 被浏览器占用时：注册表仍要清理，目录改名延后删除
+    assert store.delete_account(meta.id) is True
+    assert store.get_account(meta.id) is None
+    assert list(tmp_path.glob(".deleted-*")) != []

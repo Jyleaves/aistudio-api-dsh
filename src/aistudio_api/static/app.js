@@ -311,6 +311,26 @@ function app() {
     async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
     async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); await this.refreshAccountData(); this.showToast('已切换账号') } catch (e) { this.showToast('切换失败') } },
     async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); await this.refreshAccountData(); this.showToast('已激活') } catch (e) { this.showToast('激活失败') } },
+    async logoutAccount(account) {
+      const label = account.email || account.name || account.id;
+      if (!confirm(`确定让账号 ${label} 退出登录吗？\n\n会删除反代中的账号记录${this.accountRows.length <= 1 ? '，并清除本机 Google 登录档案（下次添加账号需重新登录）' : '；其他账号的快捷登录不受影响'}。`)) return;
+      try {
+        const r = await this.apiFetch(`/accounts/${account.id}/logout`, { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || '退出登录失败'); return }
+        this.showToast(d.message || '已退出登录');
+        await this.refreshAccountData();
+      } catch (e) { this.showToast('网络错误') }
+    },
+    async clearLoginProfile() {
+      if (!confirm('确定清除本机 Google 登录档案吗？\n\n下次“添加账号”将不再显示已记住的账号列表，需要重新输入账号信息。已添加账号不受影响。')) return;
+      try {
+        const r = await this.apiFetch('/accounts/login-profile/clear', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || '清除失败'); return }
+        this.showToast(d.message || '已清除登录档案');
+      } catch (e) { this.showToast('网络错误') }
+    },
     openAccountEdit(account) {
       this.accountEdit = { open: true, id: account.id, name: account.name || '', saving: false };
     },

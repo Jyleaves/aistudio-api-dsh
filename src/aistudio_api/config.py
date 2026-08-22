@@ -79,12 +79,28 @@ def _load_browser_engine() -> str:
     """Load browser engine name.
 
     Supported values:
-    - chromium: stealth Chromium via cloakbrowser (default)
+    - chromium: discover an installed browser (CloakBrowser bundle, then
+      system Chrome/Edge); no download required (default)
+    - cloakbrowser: always use the cloakbrowser package (auto-download)
     - camoufox: Camoufox Firefox-based backend
     """
     value = (os.getenv("AISTUDIO_BROWSER", "chromium") or "chromium").strip().lower()
-    if value not in {"camoufox", "chromium"}:
+    if value not in {"camoufox", "chromium", "cloakbrowser"}:
         return "chromium"
+    return value
+
+
+def _load_login_browser() -> str:
+    """Pick which browser the interactive Google login window uses.
+
+    Supported values:
+    - auto: system Chrome/Edge first, cloakbrowser fallback (default)
+    - system: system Chrome/Edge only
+    - cloakbrowser: stealth Chromium via cloakbrowser
+    """
+    value = (os.getenv("AISTUDIO_LOGIN_BROWSER", "auto") or "auto").strip().lower()
+    if value not in {"auto", "system", "cloakbrowser"}:
+        return "auto"
     return value
 
 
@@ -223,7 +239,11 @@ class Settings:
         default=_default_chromium_sandbox(),
     )
     browser_python: str | None = _load_env("AISTUDIO_BROWSER_PYTHON", "AISTUDIO_CAMOUFOX_PYTHON")
-    login_browser_port: int = _load_int_env("AISTUDIO_LOGIN_BROWSER_PORT", "AISTUDIO_LOGIN_CAMOUFOX_PORT", default=9223)
+    login_browser: str = _load_login_browser()
+    login_browser_channel: str | None = os.getenv("AISTUDIO_LOGIN_BROWSER_CHANNEL") or None
+    login_profile_dir: str = resolve_project_path(
+        os.getenv("AISTUDIO_LOGIN_PROFILE_DIR"), "data/login-profile"
+    )
     auth_file: str | None = discover_auth_file()
     tmp_dir: str = resolve_project_path(os.getenv("AISTUDIO_TMP_DIR"), "data/tmp")
     proxy_url: str | None = discover_proxy_url()
@@ -265,10 +285,6 @@ class Settings:
     @property
     def camoufox_python(self) -> str | None:
         return self.browser_python
-
-    @property
-    def login_camoufox_port(self) -> int:
-        return self.login_browser_port
 
     @property
     def auth_enabled(self) -> bool:

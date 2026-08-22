@@ -107,6 +107,19 @@ if (-not (Test-Path -LiteralPath $python)) {
     exit 1
 }
 
+# 后台浏览器探测：找不到任何可用浏览器时给出安装指引（不自动下载，
+# 避免需要代理的下载卡住启动）。
+$probeCode = "import sys; sys.path.insert(0, r'$root\src'); from aistudio_api.infrastructure.browser.browser_engine import detect_background_browser as d; f = d(); print(('OK ' + f['kind']) if f else 'MISSING')"
+$probeResult = (& $python -c $probeCode) 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $probeResult -or $probeResult -eq "MISSING") {
+    Write-Host "[aistudio-api] No usable browser found." -ForegroundColor Yellow
+    Write-Host "  Recommended (stable Chromium, ~130MB):" -ForegroundColor Yellow
+    Write-Host "    .\.venv\Scripts\python.exe -m playwright install chromium" -ForegroundColor Cyan
+    Write-Host "  Or install Google Chrome, or use the system Edge. Starting anyway..." -ForegroundColor Yellow
+} else {
+    Write-Host "[aistudio-api] Browser: $probeResult" -ForegroundColor DarkGray
+}
+
 Set-Location -LiteralPath $root
 Write-Host "Starting aistudio-api on http://127.0.0.1:$Port ..." -ForegroundColor Green
 Write-Host "Close this window or press Ctrl+C to stop the service."

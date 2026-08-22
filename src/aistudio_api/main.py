@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--name", help="保存账号时使用的名称")
     login_parser.add_argument("--headed", action="store_true", help="显示浏览器窗口")
     login_parser.add_argument("--hl", default="en-US", help="Google 登录页语言，默认 en-US")
-    login_parser.add_argument("--browser-port", type=int, default=settings.login_browser_port, help="登录浏览器调试端口")
+    login_parser.add_argument("--browser-port", type=int, default=9223, help="登录浏览器调试端口（仅 camoufox 后端使用）")
     login_parser.add_argument("--camoufox-port", type=int, dest="browser_port", help=argparse.SUPPRESS)
 
     return parser

@@ -9,7 +9,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-不需要手动编辑 `.env`，启动反代后访问 `http://127.0.0.1:8090`。首次启动会自动创建 `.env` 和空的 API Key 存储，不会自动生成 Key；进入“API Key 管理”页面创建 Key。点击“添加账号”会自动打开可交互的 Google 登录窗口，不需要调整无头模式；设置页中的无头模式只影响正常请求和后台浏览器。
+不需要手动编辑 `.env`，启动反代后访问 `http://127.0.0.1:8090`。首次启动会自动创建 `.env` 和空的 API Key 存储，不会自动生成 Key；进入“API Key 管理”页面创建 Key。点击“添加账号”会自动打开可交互的 Google 登录窗口（默认使用系统 Chrome/Edge），不需要调整无头模式；登录窗口使用持久化档案 `data\login-profile\`，首次登录之后再添加账号会显示 Google 账号列表，点一下即可授权。设置页中的无头模式只影响正常请求和后台浏览器。后台请求浏览器同样自动发现：项目内 CloakBrowser → 系统 Chrome → 系统 Edge，无需手动下载。
 
 dsh 插件安装：
 

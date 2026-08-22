@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 try:
@@ -19,10 +20,13 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - unavailable on Windows
     termios = None
 
+from aistudio_api.config import settings
 from aistudio_api.infrastructure.browser.browser_engine import (
     async_maximize_page_window,
+    async_launch_login_context,
     build_browser_context_options,
     describe_browser_backend,
+    is_camoufox_engine,
 )
 from aistudio_api.infrastructure.browser.camoufox_manager import CamoufoxManager
 
@@ -100,6 +104,9 @@ class LoginService:
         self._sessions: dict[str, LoginSession] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._terminal_lock = asyncio.Lock()
+        # The login profile is a single Chromium user-data-dir, so two logins
+        # cannot run at once (Chromium locks the profile directory).
+        self._login_lock = asyncio.Lock()
 
     def _generate_session_id(self) -> str:
         return f"login_{secrets.token_hex(8)}"
@@ -113,6 +120,8 @@ class LoginService:
         ui_locale: str | None = None,
     ) -> str:
         """启动登录流程，返回 session_id。"""
+        if self._login_lock.locked():
+            raise RuntimeError("已有登录窗口打开，请先完成或关闭当前登录")
         session_id = self._generate_session_id()
         session = LoginSession(session_id=session_id)
         self._sessions[session_id] = session
@@ -132,6 +141,22 @@ class LoginService:
     def get_status(self, session_id: str) -> LoginSession | None:
         """获取登录状态。"""
         return self._sessions.get(session_id)
+
+    async def clear_login_profile(self) -> None:
+        """清除持久化登录档案（Google 账号选择器里记住的账号列表）。
+
+        只影响后续"添加账号"窗口看到的账号列表；不会吊销 Google 服务
+        端会话，也不影响已保存账号的 Cookie。
+        """
+        import shutil
+
+        if self._login_lock.locked():
+            raise RuntimeError("登录窗口打开中，请先完成或关闭当前登录")
+        async with self._login_lock:
+            profile_path = Path(settings.login_profile_dir)
+            if profile_path.exists():
+                shutil.rmtree(profile_path, ignore_errors=True)
+                logger.info("已清除登录档案: %s", profile_path)
 
     def _terminal_available(self) -> bool:
         return sys.stdin.isatty() and sys.stdout.isatty()
@@ -638,12 +663,16 @@ class LoginService:
         return "switch"
 
     def _build_login_url(self, *, ui_locale: str | None = None) -> str:
+        # AddSession keeps Google's account chooser visible even when the login
+        # profile already holds a live session: previously used accounts show up
+        # as a one-click list plus "use another account". ServiceLogin would
+        # silently redirect through the current session instead.
         query = {
             "continue": "https://aistudio.google.com",
         }
         if ui_locale:
             query["hl"] = ui_locale
-        return f"https://accounts.google.com/ServiceLogin?{urlencode(query)}"
+        return f"https://accounts.google.com/AddSession?{urlencode(query)}"
 
     async def _terminal_login_loop(
         self,
@@ -811,25 +840,43 @@ class LoginService:
     ) -> None:
         """登录工作协程。"""
         session = self._sessions[session_id]
-        manager = CamoufoxManager(
-            port=self._port,
-            headless=headless,
-        )
+        # 登录 profile 是单个 Chromium user-data-dir，同一时间只能有一个登录
+        # 窗口使用它；start_login 已做快速失败，这里兜底串行化。
+        await self._login_lock.acquire()
+        manager: CamoufoxManager | None = None
         playwright = None
         browser = None
+        context = None
         terminal_task: asyncio.Task | None = None
         try:
             # 启动浏览器
-            logger.info("启动登录浏览器，端口 %d", self._port)
-            await manager.start()
-            logger.info("浏览器后端已准备: %s", describe_browser_backend())
+            if is_camoufox_engine():
+                manager = CamoufoxManager(
+                    port=self._port,
+                    headless=headless,
+                )
+                logger.info("启动 Camoufox 登录浏览器，端口 %d", self._port)
+                await manager.start()
 
-            # 连接 Playwright
-            from playwright.async_api import async_playwright
-            playwright = await async_playwright().start()
-            browser = await manager.launch_browser(playwright)
-            context = await browser.new_context(**build_browser_context_options(headless=headless))
-            page = await context.new_page()
+                # 连接 Playwright
+                from playwright.async_api import async_playwright
+                playwright = await async_playwright().start()
+                browser = await manager.launch_browser(playwright)
+                context = await browser.new_context(**build_browser_context_options(headless=headless))
+                backend_desc = describe_browser_backend()
+            else:
+                # 首选系统 Chrome/Edge（无需下载 500MB CloakBrowser），
+                # 且使用持久化 profile，Google 会记住账号并显示账号选择列表。
+                handle = await async_launch_login_context(
+                    headless=headless,
+                    profile_dir=settings.login_profile_dir,
+                )
+                context = handle.context
+                playwright = handle.playwright
+                backend_desc = handle.backend
+            logger.info("浏览器后端已准备: %s", backend_desc)
+
+            page = context.pages[0] if context.pages else await context.new_page()
             await async_maximize_page_window(page, headless=headless)
 
             # 设置登录完成检测
@@ -840,6 +887,11 @@ class LoginService:
             def abort_login(reason: str) -> None:
                 if login_done.is_set() or login_aborted.is_set():
                     return
+                if session.status == LoginStatus.FAILED:
+                    # 已有更具体的失败原因（超时等），不要被清理阶段的
+                    # 窗口关闭事件覆盖。
+                    login_aborted.set()
+                    return
                 session.status = LoginStatus.FAILED
                 session.error = reason
                 login_aborted.set()
@@ -847,6 +899,9 @@ class LoginService:
 
             async def on_navigation(frame):
                 nonlocal detected_email
+                # 登录页面内嵌的 google.com iframe 不能算作登录完成
+                if frame is not page.main_frame:
+                    return
                 url = frame.url
                 logger.debug("导航到: %s", url)
                 # 检测登录完成：跳转到非登录页面
@@ -885,7 +940,8 @@ class LoginService:
             page.on("framenavigated", on_navigation)
             page.on("close", on_page_close)
             context.on("close", on_context_close)
-            browser.on("disconnected", on_browser_disconnected)
+            if browser is not None:
+                browser.on("disconnected", on_browser_disconnected)
 
             # 导航到 Google 登录页面
             logger.info("打开 Google 登录页面")
@@ -997,7 +1053,12 @@ class LoginService:
                     pass
                 except Exception:
                     pass
-            # 清理浏览器和 Playwright
+            # 清理浏览器和 Playwright（持久化 context 直接 close 即可退出浏览器）
+            try:
+                if context:
+                    await context.close()
+            except Exception:
+                pass
             try:
                 if browser:
                     await browser.close()
@@ -1009,8 +1070,10 @@ class LoginService:
             except Exception:
                 pass
             try:
-                await manager.stop()
+                if manager:
+                    await manager.stop()
             except Exception:
                 pass
+            self._login_lock.release()
             # 清理任务引用
             self._tasks.pop(session_id, None)
