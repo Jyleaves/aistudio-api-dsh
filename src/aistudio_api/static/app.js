@@ -111,7 +111,7 @@ function app() {
       location.reload();
     },
     go(v) {
-      this.view = v; this.sidebarOpen = false;
+      this.view = v; this.sidebarOpen = false; this.configOpen = false;
       if (v === 'dashboard') this.loadStats();
       if (v === 'accounts') { this.loadAccounts(); this.loadRotation() }
       if (v === 'api-keys') this.loadApiKeys();
