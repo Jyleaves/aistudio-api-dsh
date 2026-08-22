@@ -1,23 +1,12 @@
-# AI Studio API 本地反代
+# AI Studio API for dsh
 
-本项目将 Google AI Studio 转换为 OpenAI 兼容接口，支持 Gemini/Gemma、多账号轮询、图片输入、PDF 输入、Google Search、流式输出和图片生成。
+本项目将 Google AI Studio 转换为 dsh 可使用的 Gemini 接口，支持多账号轮询、图片、PDF、Google Search、思考输出、函数工具和流式响应。
 
-本仓库基于 [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api)，保留上游 MIT License 和版权声明。本地修改不代表 Google 或上游作者。
+本项目基于 [chrysoljq/aistudio-api](https://github.com/chrysoljq/aistudio-api)，上游采用 MIT License。再发布或修改时请保留上游版权声明和许可证。本项目不是 Google 官方项目。
 
-## 一、环境要求
+## 1. 安装反代
 
-- Windows 10/11
-- Python 3.11 或更高版本
-- Node.js/npm（仅在使用 pi-web 补丁脚本时需要）
-- 可用的 Google 账号
-
-所有 Python 依赖都安装到项目虚拟环境，不要安装到系统 Python 或 base 环境。
-
-## 二、安装
-
-在仓库根目录打开 PowerShell。下面的命令都使用项目相对路径，不要求项目位于固定目录。
-
-创建虚拟环境并安装依赖：
+要求 Windows 10/11、Python 3.11+ 和可用的 Google 账号。Python 依赖安装在虚拟环境中：
 
 ```powershell
 python -m venv .venv
@@ -25,178 +14,104 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-项目使用 CloakBrowser Chromium。将对应的 Windows 浏览器文件放到：
+下载 CloakBrowser 的 Windows 版本并解压为项目根目录下的 `cloakbrowser-chromium\chrome.exe`：
 
-```text
-cloakbrowser-chromium\chrome.exe
-```
+<https://github.com/CloakHQ/cloakbrowser/releases>
 
-浏览器文件从 [CloakBrowser Releases](https://github.com/CloakHQ/cloakbrowser/releases) 获取。不要将浏览器压缩包、浏览器目录、Cookie 或日志提交到公开仓库。
-
-## 三、配置 `.env`
-
-复制配置模板：
+复制 `.env.example` 为 `.env`。首次安装可以让 `AISTUDIO_API_KEY` 留空，首次启动会自动生成本地访问 Key：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-至少设置以下内容：
-
-```dotenv
-AISTUDIO_PORT=8090
-AISTUDIO_BROWSER=chromium
-AISTUDIO_BROWSER_HEADLESS=1
-AISTUDIO_BROWSER_EXECUTABLE=cloakbrowser-chromium\chrome.exe
-AISTUDIO_API_KEY=留空则首次启动自动生成
-AISTUDIO_ACCOUNTS_DIR=data\accounts
-AISTUDIO_TMP_DIR=data\tmp
-```
-
-`AISTUDIO_API_KEY` 是访问本地反代的令牌，不是 Google API Key。公开部署时必须使用强随机值；本地管理页和 API 请求都需要使用它。
-
-如果是首次安装，可以不填写 `AISTUDIO_API_KEY`。首次启动会自动生成随机 Key 并写入项目根目录的 `.env`，同时保存到 `data\api_keys.json`。本机打开管理页时会自动建立本地管理会话，不会每次重复要求输入；远程访问仍必须提供 API Key。
-
-首次添加账号时，如果需要看到登录浏览器，将 `AISTUDIO_BROWSER_HEADLESS` 临时改为 `0`。登录完成后改回 `1`。
-
-## 四、启动与停止
-
-推荐双击项目根目录的：
-
-```text
-start-aistudio-api.bat
-```
-
-脚本会先检查 `127.0.0.1:8090`：
-
-- 如果没有本项目进程，直接启动；
-- 如果已经是本项目进程，会询问是否关闭旧进程；选择是后再启动；
-- 如果端口被其他程序占用，会提示并退出，不会强行结束其他程序。
-
-也可以在 PowerShell 中启动：
+双击 `start-aistudio-api.bat` 启动，或执行：
 
 ```powershell
 .\.venv\Scripts\python.exe main.py server --port 8090
 ```
 
-管理页地址：
+管理页面：<http://127.0.0.1:8090>
 
-```text
-http://127.0.0.1:8090
-```
+首次登录 Google 账号时，把 `.env` 中的 `AISTUDIO_BROWSER_HEADLESS` 临时改为 `0`；登录完成后改回 `1`。账号 Cookie 保存在 `data\accounts\`，不要提交到 GitHub。
 
-结束服务时可以关闭启动窗口，或再次运行启动脚本并确认关闭已运行实例。
+API Key 管理支持同时保留多个有效 Key。创建新 Key 不会使旧 Key 失效；需要失效某个 Key 时，在列表中单独撤销即可。
 
-## 五、添加和管理 Google 账号
+## 2. 安装 dsh 插件
 
-1. 本机打开管理页会自动建立本地管理会话，无需重复输入 API Key；从其他设备访问时输入 `.env` 中的 `AISTUDIO_API_KEY`。
-2. 进入“账号管理”，点击添加账号。
-3. 在弹出的 Google 登录浏览器中完成登录。
-4. 登录完成后，账号 Cookie 会保存到项目内的 `data\accounts\acc_xxx\`。
-5. 账号列表支持轮询、手动激活和修改账号显示名称。
-
-管理页的“API Key 管理”支持查看脱敏 Key、创建和撤销。新 Key 的明文只在创建完成时显示一次；撤销最后一个有效 Key 会被阻止，避免把服务锁死。
-
-可以同时保留多个有效 API Key。创建新 Key 不会自动使旧 Key 失效；需要失效某个 Key 时，在列表中单独撤销即可。
-
-账号 Cookie 会持久化保存。通常不需要定期重新登录，只有 Google 会话失效、修改密码、触发安全验证或账号被撤销时才需要重新登录。
-
-不要公开以下内容：
-
-- `.env`
-- `data/accounts/`
-- Google Cookie
-- API Token
-- `*.log`
-
-## 六、配置 pi-web
-
-在 pi 的模型配置中添加 OpenAI 兼容供应商：
-
-```json
-{
-  "providers": {
-    "gemini-aistudio": {
-      "api": "openai-completions",
-      "apiKey": "与 .env 相同的 AISTUDIO_API_KEY",
-      "baseUrl": "http://127.0.0.1:8090/v1",
-      "models": [
-        {
-          "id": "gemini-3.7-flash",
-          "name": "Gemini 3.7 Flash (AI Studio)",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1000000,
-          "maxTokens": 65536
-        }
-      ]
-    }
-  }
-}
-```
-
-保存后重启或刷新 pi-web。图片可以直接从 pi-web 上传；PDF 等文件由 pi-web 扩展和反代共同处理，具体能力取决于所选模型。
-
-## 七、配置 dsh
-
-`dsh-gemini-aistudio` 是独立的 dsh provider 插件，不会替换 dsh 的 DeepSeek provider 或通用 `llm-pi-ai`。先启动反代，再在 dsh 的 web profile 目录执行：
+将 `dsh-gemini-aistudio` 项目放在本机目录后，在 dsh web profile 中安装：
 
 ```powershell
-dsh plugin --profile web add E:\Project\Codex\dsh-gemini-aistudio
+dsh plugin --profile web add E:\Project\dsh-gemini-aistudio
 ```
 
-如果插件目录位置不同，将命令中的路径替换为实际路径。设置 dsh 进程可见的反代 API Key：
+如果插件目录不同，把命令中的路径替换为实际路径。设置 dsh 进程可见的反代 API Key：
 
 ```powershell
-$env:AISTUDIO_API_KEY = "与 .env 中某个有效 Key 相同"
+$env:AISTUDIO_API_KEY = "与反代 .env 中某个有效 Key 相同"
 ```
 
-重启 dsh，在 provider 中选择 `aistudio-gemini`。插件会从反代的 `/v1/models` 自动读取仅 Gemini 开头的模型，并填充上下文窗口、最大输出 Token、图片输入和 reasoning 能力；一般不需要再手动填写模型元数据。反代新增模型后，在 dsh 重启或重新加载 provider 即可刷新列表。
+重启 dsh。插件 provider ID 是 `aistudio-gemini`，普通 Gemini 请求走原生 Gemini 接口；带有 dsh 函数工具的请求走反代 OpenAI 兼容接口，以保证 `read`、`edit`、`bash` 等工具调用稳定完成。
 
-插件还提供原图/PDF 上传按钮、PDF 路径识别和 Google Search。dsh 的 `read`、`edit`、`bash` 等自定义工具请求会走反代的 OpenAI 兼容接口；普通 Gemini 请求走原生 Gemini 接口。Google Search 不会隐式和自定义函数工具混用，以避免 AI Studio 的工具配置冲突。
+## 3. 在 dsh 设置中添加提供方
 
-## 七、模型和配置
+如果 dsh 设置页面没有自动显示插件模型，进入“设置 → 模型 → 自定义提供方”，按下面填写。截图中的字段对应关系如下：
 
-模型列表由反代的 `/v1/models` 提供。pi-web 的模型发现需要手动触发，不会持续自动修改本地配置。
-
-项目根目录的 `config.yaml` 用于模型默认参数、Google Search、Thinking、安全设置和图片模型配置。修改后需要重启反代。
-
-常用环境变量：
-
-| 变量 | 作用 |
+| 界面字段 | 填写值 |
 |---|---|
-| `AISTUDIO_PORT` | 反代端口，当前为 `8090` |
-| `AISTUDIO_API_KEY` | 本地 API 鉴权令牌 |
-| `AISTUDIO_BROWSER_EXECUTABLE` | Chromium 可执行文件路径 |
-| `AISTUDIO_BROWSER_HEADLESS` | 是否隐藏浏览器，`1` 为隐藏 |
-| `AISTUDIO_ACCOUNT_ROTATION_MODE` | 账号轮询：`round_robin`、`lru`、`least_rl` |
-| `AISTUDIO_ACCOUNT_COOLDOWN_SECONDS` | 账号限流后的冷却时间 |
-| `AISTUDIO_TIMEOUT_REPLAY` | 非流式请求超时时间 |
-| `AISTUDIO_TIMEOUT_STREAM` | 流式请求超时时间 |
+| Provider ID | `gemini-aistudio` |
+| 显示名称 | `Google AI Studio` |
+| API 地址 | `http://127.0.0.1:8090/v1` |
+| API 协议 | `openai-completions` |
+| API 密钥 | 反代 `.env` 中的有效 API Key |
 
-## 八、更新项目
+点击“获取可用模型”。反代只返回 Gemini 开头的模型。如果自动获取失败，确认反代已启动、API 地址末尾为 `/v1`，并确认 API 密钥没有多余空格。
 
-双击项目根目录的 `update-aistudio-api.bat`。更新脚本会：
+## 4. 在 dsh 中添加模型
 
-1. 检查 Git 工作区，发现未提交代码修改时停止，避免覆盖本地补丁；
-2. 使用当前分支配置的上游分支执行 `git pull --ff-only`；
-3. 在项目虚拟环境中同步 `requirements.txt`；
-4. 保留 `.env`、`data\`、`.venv\` 和本地浏览器文件，不需要重新配置账号。
+点击“添加模型”，至少添加以下模型条目：
 
-反代运行中时，使用：
+| 模型字段 | `gemini-3.7-flash` 的值 |
+|---|---|
+| 模型 ID | `gemini-3.7-flash` |
+| 显示名称 | `Gemini 3.7 Flash (AI Studio)` |
+| 支持推理 / Reasoning | 开启 |
+| 输入模态 | `text`、`image` |
+| 上下文窗口 | `1000000` |
+| 最大输出 Token | `65536` |
 
-```powershell
-.\update-aistudio-api.ps1 -Restart
-```
+其他 Gemini 模型使用其实际 ID，例如 `gemini-3.5-flash`。反代 `/v1/models` 会同时返回上下文窗口、最大输出 Token、图片输入和 reasoning 元数据；如果 dsh 当前版本的自定义提供方仍不自动填充这些字段，按上表手动填写即可。
 
-如果只想检查是否满足自动更新条件：
+插件原生 provider 的模型发现由 dsh 重启或重新加载 provider 触发；自定义提供方页面的“获取可用模型”则读取反代的 `/v1/models`。两者是 dsh 中不同的配置入口。
+
+## 5. dsh 特性
+
+- 插件上传按钮支持原始图片和 PDF，不经过 dsh 图片压缩流程。
+- 用户消息中的本地 PDF 路径会被识别并以内联 PDF 发送。
+- 普通 Gemini 请求默认启用 Google Search。
+- 自定义函数工具请求不会隐式混入 Google Search，避免 Gemini 3 的内置工具配置冲突。
+- PDF 默认限制为 20 MiB、300 页；原始上传按钮默认限制为 32 MiB。
+- PDF 会缓存本地文件内容，账号轮换重试时不会重复读取和编码文件。
+
+## 6. 更新
+
+反代项目更新：
 
 ```powershell
 .\update-aistudio-api.ps1 -CheckOnly
+.\update-aistudio-api.ps1 -Restart
 ```
 
-更新完成后建议验证管理页、账号列表、`/v1/models` 和一次文本请求。若 GitHub 仓库中的本地修改尚未提交，先提交或备份后再更新。
+dsh 插件更新：
 
-## 九、许可证
+```powershell
+.\update-dsh-gemini-aistudio.ps1 -CheckOnly
+.\update-dsh-gemini-aistudio.ps1
+```
 
-本项目及上游项目采用 MIT License。再发布或二次修改时，请保留上游版权声明和许可证文件。
+更新脚本要求 Git 工作区没有未提交修改，然后执行快进更新并重新安装插件依赖。`.env`、账号 Cookie 和本地运行数据不会被更新覆盖。
+
+## 7. 安全与许可证
+
+不要公开 `.env`、`data\accounts\`、Cookie、API Key、日志或浏览器文件。公开部署时必须增加 HTTPS、网络访问控制和防火墙。
+
+反代及插件保留各自的 MIT License；插件是独立项目，不代表 dsh 或 Google 官方。
