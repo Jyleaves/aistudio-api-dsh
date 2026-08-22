@@ -74,6 +74,18 @@ def test_find_playwright_chromium_locates_newest_version(monkeypatch, tmp_path):
     assert "chromium-1234" in located
 
 
+def test_find_playwright_chromium_prefers_installed_bundle(monkeypatch, tmp_path):
+    bundled = tmp_path / "playwright-browsers" / "chromium-bundled" / "chrome-win64"
+    bundled.mkdir(parents=True)
+    executable = bundled / "chrome.exe"
+    executable.write_bytes(b"")
+    monkeypatch.setattr(engine, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    assert engine._find_playwright_chromium() == str(executable)
+
+
 def test_discovery_returns_none_without_any_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(engine.settings, "browser_executable_path", None)

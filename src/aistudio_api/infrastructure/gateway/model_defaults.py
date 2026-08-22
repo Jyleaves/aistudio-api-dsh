@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 import os
+import sys
 
 import yaml
 
@@ -260,6 +261,16 @@ def _resolve_config_path(config_path: str | os.PathLike[str] | None) -> Path:
     override = os.getenv("AISTUDIO_CONFIG_FILE")
     if override:
         return Path(override)
+    if getattr(sys, "frozen", False):
+        # 打包版：优先 exe 旁的用户自定义 config.yaml，其次 PyInstaller
+        # 自带的内置副本（sys._MEIPASS 即 onedir 的 _internal 目录）。
+        beside_exe = Path(sys.executable).parent / "config.yaml"
+        if beside_exe.exists():
+            return beside_exe
+        bundled = Path(getattr(sys, "_MEIPASS", "")) / "config.yaml"
+        if bundled.exists():
+            return bundled
+        return beside_exe
     return _DEFAULT_CONFIG_PATH
 
 

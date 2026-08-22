@@ -213,6 +213,9 @@ def _find_playwright_chromium() -> str | None:
     override = os.getenv("PLAYWRIGHT_BROWSERS_PATH")
     if override and override != "0":
         roots.append(Path(override))
+    # The desktop installer ships a Playwright Chromium copy next to the app.
+    # Prefer it so the installed application is self-contained and reproducible.
+    roots.append(PROJECT_ROOT / "playwright-browsers")
     if platform.system() == "Windows":
         local_appdata = os.getenv("LOCALAPPDATA")
         if local_appdata:

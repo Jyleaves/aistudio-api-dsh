@@ -10,9 +10,13 @@ def build_parser() -> argparse.ArgumentParser:
     from aistudio_api.config import settings
 
     parser = argparse.ArgumentParser(description="AI Studio unified entrypoint")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
-    server_parser = subparsers.add_parser("server", help="启动 OpenAI 兼容 API 服务")
+    # 无参数 = 桌面应用模式（双击 exe 的默认行为）
+    app_parser = subparsers.add_parser("app", help="桌面应用模式（内嵌管理页窗口）")
+    app_parser.add_argument("--port", type=int, default=settings.port)
+
+    server_parser = subparsers.add_parser("server", help="启动 OpenAI 兼容 API 服务（控制台模式）")
     server_parser.add_argument("--port", type=int, default=settings.port)
     server_parser.add_argument("--browser-port", type=int, default=settings.browser_port)
     server_parser.add_argument("--camoufox-port", type=int, dest="browser_port", help=argparse.SUPPRESS)
@@ -38,12 +42,141 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--browser-port", type=int, default=9223, help="登录浏览器调试端口（仅 camoufox 后端使用）")
     login_parser.add_argument("--camoufox-port", type=int, dest="browser_port", help=argparse.SUPPRESS)
 
+    subparsers.add_parser("install-browser", help="下载后台浏览器（稳定版 Chromium，自动使用系统代理）")
+
     return parser
+
+
+def _windows_system_proxy() -> str | None:
+    """读取 Windows 系统代理，供下载浏览器时使用。"""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        ) as key:
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return None
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+            if not server:
+                return None
+            if "=" in server:  # "http=...;https=..." 形式取 http 条目
+                for entry in server.split(";"):
+                    if entry.startswith("http="):
+                        server = entry.split("=", 1)[1]
+                        break
+            if not server.startswith("http"):
+                server = f"http://{server}"
+            return server
+    except Exception:
+        return None
+
+
+def _run_install_browser() -> int:
+    """下载稳定版 Chromium；国内环境自动带上系统代理。"""
+    import os
+    import subprocess
+    import sys
+
+    proxy = _windows_system_proxy()
+    env = dict(os.environ)
+    if proxy:
+        print(f"使用系统代理: {proxy}")
+        env["HTTP_PROXY"] = proxy
+        env["HTTPS_PROXY"] = proxy
+
+    if getattr(sys, "frozen", False):
+        # 打包版：没有 -m playwright，改用 playwright 包 API
+        from playwright.__main__ import main as playwright_main
+        sys.argv = ["playwright", "install", "chromium"]
+        try:
+            playwright_main()
+            return 0
+        except SystemExit as exc:
+            return int(exc.code or 0)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+        env=env,
+    )
+    return result.returncode
+
+
+def _run_app(port: int) -> None:
+    """桌面应用模式：后台启动 API 服务，原生窗口内嵌管理页面。"""
+    import logging
+    import socket
+    import threading
+
+    # 打包版无控制台，日志落盘方便排查
+    from aistudio_api.config import PROJECT_ROOT
+
+    log_dir = PROJECT_ROOT / "data"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.FileHandler(log_dir / "app.log", encoding="utf-8")],
+        force=True,
+    )
+
+    def _pick_port(preferred: int) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", preferred))
+                return preferred
+            except OSError:
+                sock.bind(("127.0.0.1", 0))
+                return int(sock.getsockname()[1])
+
+    actual_port = _pick_port(port)
+
+    import uvicorn
+
+    from aistudio_api.api.app import app
+
+    # Windowed PyInstaller builds have no console streams. Uvicorn's default
+    # logging config calls stderr.isatty(), which crashes when stderr is None.
+    # The application logging configured above already writes to data/app.log.
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=actual_port,
+        log_level="warning",
+        log_config=None,
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True, name="aistudio-server")
+    thread.start()
+
+    import webview
+
+    window = webview.create_window(
+        "Asteria",
+        f"http://127.0.0.1:{actual_port}/",
+        width=1240,
+        height=840,
+        min_size=(960, 640),
+    )
+    try:
+        webview.start()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command in (None, "app"):
+        from aistudio_api.config import settings
+
+        _run_app(getattr(args, "port", None) or settings.port)
+        return
 
     if args.command == "server":
         from aistudio_api.api.app import main as server_main
@@ -52,6 +185,9 @@ def main():
         sys.argv = ["aistudio-api-server", "--port", str(args.port), "--browser-port", str(args.browser_port)]
         server_main()
         return
+
+    if args.command == "install-browser":
+        raise SystemExit(_run_install_browser())
 
     if args.command == "client":
         from aistudio_api.config import DEFAULT_TEXT_MODEL
@@ -113,3 +249,7 @@ def main():
 
         asyncio.run(_run_login())
         return
+
+
+if __name__ == "__main__":
+    main()
