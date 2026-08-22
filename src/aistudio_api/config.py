@@ -34,6 +34,37 @@ ensure_env_file()
 load_dotenv()
 
 
+def _repair_moved_project_paths() -> None:
+    """Rebase stale absolute paths left by moving or renaming the checkout."""
+    candidates = {
+        "AISTUDIO_BROWSER_EXECUTABLE": PROJECT_ROOT / "cloakbrowser-chromium" / "chrome.exe",
+        "AISTUDIO_ACCOUNTS_DIR": PROJECT_ROOT / "data" / "accounts",
+        "AISTUDIO_TMP_DIR": PROJECT_ROOT / "data" / "tmp",
+        "CLOAKBROWSER_BINARY_PATH": PROJECT_ROOT / "cloakbrowser-chromium" / "chrome.exe",
+    }
+    browser_path = candidates["AISTUDIO_BROWSER_EXECUTABLE"]
+    for name, current in candidates.items():
+        raw = os.getenv(name)
+        if not raw:
+            continue
+        configured = Path(raw).expanduser()
+        if configured.is_absolute() and not configured.exists() and current.exists():
+            os.environ[name] = str(current)
+
+    # CloakBrowser reads its own override directly from the environment. Keep
+    # it aligned with the proxy setting after a project folder move.
+    executable = os.getenv("AISTUDIO_BROWSER_EXECUTABLE")
+    if executable:
+        executable_path = Path(executable).expanduser()
+        if not executable_path.is_absolute():
+            executable_path = PROJECT_ROOT / executable_path
+        if executable_path.exists():
+            os.environ["CLOAKBROWSER_BINARY_PATH"] = str(executable_path.resolve())
+
+
+_repair_moved_project_paths()
+
+
 def resolve_project_path(value: str | None, default: str) -> str:
     """Resolve relative paths against the repository, not the launch directory."""
     candidate = Path(value or default).expanduser()

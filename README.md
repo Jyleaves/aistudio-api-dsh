@@ -18,12 +18,6 @@ python -m venv .venv
 
 <https://github.com/CloakHQ/cloakbrowser/releases>
 
-首次启动会自动创建项目 `.env` 和空的 API Key 存储，不会自动生成或写入任何 API Key，也不需要手动编辑 `.env`。如需预先创建配置文件，可执行：
-
-```powershell
-Copy-Item .env.example .env
-```
-
 双击 `start-aistudio-api.bat` 启动，或执行：
 
 ```powershell
