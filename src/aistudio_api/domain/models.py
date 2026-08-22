@@ -211,6 +211,8 @@ def _coerce_wire_payload(raw_value: Any, payload_type: str) -> dict[str, Any] | 
 
 
 def _decode_wire_argument_pairs(raw_args: Any) -> Any:
+    if isinstance(raw_args, dict):
+        return {key: _decode_wire_value(value) for key, value in raw_args.items()}
     if not isinstance(raw_args, list):
         return raw_args
 
@@ -227,9 +229,21 @@ def _decode_wire_argument_pairs(raw_args: Any) -> Any:
 
 
 def _decode_wire_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _decode_wire_value(item) for key, item in value.items()}
     if isinstance(value, list):
-        if len(value) >= 3 and value[2] is not None:
+        # AI Studio's array value variant stores the actual elements at wire
+        # index 5: [null, null, null, null, null, [item, ...]]. Without this
+        # branch, the five placeholder values leak into dsh and its schema
+        # validator reports every array element as a non-string/null value.
+        if len(value) > 5 and all(item is None for item in value[:5]) and isinstance(value[5], list):
+            return [_decode_wire_value(item) for item in value[5]]
+        if len(value) >= 3 and value[0] is None and value[1] is None:
+            if isinstance(value[2], list):
+                return [_decode_wire_value(item) for item in value[2]]
             return value[2]
+        if len(value) >= 2 and value[0] is None:
+            return _decode_wire_argument_pairs(value[1])
         decoded = _decode_wire_argument_pairs(value)
         if decoded != value:
             return decoded

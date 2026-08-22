@@ -96,3 +96,21 @@ def test_parse_response_chunk_extracts_real_aistudio_function_call_shape():
             "thought_signature": "EiYKJGUyNDgzMGE3LTVjZDYtNDJmZS05OThiLWVlNTM5ZTcyYjljMw==",
         }
     ]
+
+
+def test_parse_response_chunk_decodes_aistudio_array_argument_variant():
+    raw_part = [None] * 10 + [[
+        "web_search",
+        [[[
+            "queries", [None, None, None, None, None, ["alpha", "beta"]]
+        ]]],
+        "call_1",
+    ]]
+    chunk = [
+        [[[[raw_part], "model"]]],
+        None, None, None, None, None, None, None,
+    ]
+
+    candidate = parse_response_chunk(chunk)
+
+    assert candidate.function_calls[0]["args"] == {"queries": ["alpha", "beta"]}
