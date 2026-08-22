@@ -24,6 +24,31 @@ def test_wire_codec_decodes_function_call_and_response_parts():
     assert response.function_response == ("Read", {"result": "content"})
 
 
+def test_wire_codec_decodes_nested_function_arguments():
+    codec = AistudioWireCodec()
+    encoded_args = [
+        [
+            [
+                "queries",
+                [None, None, [[None, None, "alpha"], [None, None, "beta"]]],
+            ],
+            [
+                "options",
+                [None, [[[
+                    "limit", [None, None, 2]
+                ]]]],
+            ],
+        ]
+    ]
+    call = codec._decode_part([None] * 10 + [["web_search", encoded_args, "call_1"]])
+
+    assert call.function_call == (
+        "web_search",
+        {"queries": ["alpha", "beta"], "options": {"limit": 2}},
+        "call_1",
+    )
+
+
 def test_normalize_anthropic_request_maps_tool_use_and_tool_result_to_wire_parts():
     req = AnthropicMessageRequest(
         model="gemini-3.1-pro-preview",

@@ -20,6 +20,40 @@ TOOLS_TEMPLATES = {
 }
 
 
+def _decode_wire_value(value):
+    """Decode the compact value wrapper used by AI Studio function args."""
+    if isinstance(value, dict):
+        return {key: _decode_wire_value(item) for key, item in value.items()}
+    if not isinstance(value, list):
+        return value
+
+    # Scalar and array values use [null, null, value]. Arrays wrap each item
+    # with the same value encoding, including nested objects.
+    if len(value) >= 3 and value[0] is None and value[1] is None:
+        if isinstance(value[2], list):
+            return [_decode_wire_value(item) for item in value[2]]
+        return value[2]
+
+    # Objects use [null, encoded-argument-pairs].
+    if len(value) >= 2 and value[0] is None:
+        return _decode_wire_args(value[1])
+    return value
+
+
+def _decode_wire_args(value):
+    """Decode AI Studio's encoded function argument object."""
+    if isinstance(value, dict):
+        return {key: _decode_wire_value(item) for key, item in value.items()}
+    if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], list):
+        return value
+
+    decoded = {}
+    for pair in value[0]:
+        if isinstance(pair, list) and len(pair) >= 2 and isinstance(pair[0], str):
+            decoded[pair[0]] = _decode_wire_value(pair[1])
+    return decoded
+
+
 def build_image_generation_search_tool(*, google_search: bool = False, image_search: bool = False) -> list | None:
     if not google_search and not image_search:
         return None
@@ -293,7 +327,7 @@ class AistudioWireCodec:
                 raw_function_call = raw_part[3]
             if raw_function_call is not None:
                 name = raw_function_call[0] if raw_function_call and isinstance(raw_function_call[0], str) else "unknown"
-                args = raw_function_call[1] if len(raw_function_call) > 1 else {}
+                args = _decode_wire_args(raw_function_call[1]) if len(raw_function_call) > 1 else {}
                 call_id = raw_function_call[2] if len(raw_function_call) > 2 and isinstance(raw_function_call[2], str) else None
                 signature = raw_part[14] if len(raw_part) > 14 and isinstance(raw_part[14], str) else None
                 function_call = (name, args, call_id) if call_id else (name, args)
@@ -303,7 +337,7 @@ class AistudioWireCodec:
         ):
             raw_function_response = raw_part[11] if len(raw_part) > 11 and isinstance(raw_part[11], list) else raw_part[4]
             name = raw_function_response[0] if raw_function_response and isinstance(raw_function_response[0], str) else "unknown"
-            response = raw_function_response[1] if len(raw_function_response) > 1 else {}
+            response = _decode_wire_args(raw_function_response[1]) if len(raw_function_response) > 1 else {}
             return AistudioPart(function_response=(name, response))
         if isinstance(raw_part, list) and len(raw_part) > 1:
             return AistudioPart(text=raw_part[1])
