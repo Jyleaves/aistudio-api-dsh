@@ -237,7 +237,12 @@ def _decode_wire_value(value: Any) -> Any:
         # branch, the five placeholder values leak into dsh and its schema
         # validator reports every array element as a non-string/null value.
         if len(value) > 5 and all(item is None for item in value[:5]) and isinstance(value[5], list):
-            return [_decode_wire_value(item) for item in value[5]]
+            items = value[5]
+            # The streaming response may add one extra list container around
+            # the array payload (observed as [["q1", "q2"]]).
+            if len(items) == 1 and isinstance(items[0], list):
+                items = items[0]
+            return [_decode_wire_value(item) for item in items]
         if len(value) >= 3 and value[0] is None and value[1] is None:
             if isinstance(value[2], list):
                 return [_decode_wire_value(item) for item in value[2]]

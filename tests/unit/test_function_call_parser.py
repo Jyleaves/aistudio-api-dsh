@@ -102,7 +102,7 @@ def test_parse_response_chunk_decodes_aistudio_array_argument_variant():
     raw_part = [None] * 10 + [[
         "web_search",
         [[[
-            "queries", [None, None, None, None, None, ["alpha", "beta"]]
+            "queries", [None, None, None, None, None, [["alpha", "beta"]]]
         ]]],
         "call_1",
     ]]
