@@ -9,7 +9,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-不需要手动编辑 `.env`，启动反代后访问 `http://127.0.0.1:8090`。首次启动会自动创建 `.env` 和空的 API Key 存储，不会自动生成 Key；进入“API Key 管理”页面创建 Key。首次登录 Google 账号时，在“设置”中关闭无头模式，登录完成后再打开。
+不需要手动编辑 `.env`，启动反代后访问 `http://127.0.0.1:8090`。首次启动会自动创建 `.env` 和空的 API Key 存储，不会自动生成 Key；进入“API Key 管理”页面创建 Key。点击“添加账号”会自动打开可交互的 Google 登录窗口，不需要调整无头模式；设置页中的无头模式只影响正常请求和后台浏览器。
 
 dsh 插件安装：
 
