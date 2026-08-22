@@ -76,6 +76,10 @@ class ApiKeyStore:
         with self._lock:
             data = self._load()
             changed = False
+            active_keys = [item for item in data["keys"] if not item.get("revoked_at")]
+            if len(active_keys) != len(data["keys"]):
+                data["keys"] = active_keys
+                changed = True
             known_hashes = {item.get("hash") for item in data["keys"]}
             existing = [key for key in settings.api_keys if not _is_placeholder(key)]
             if existing:
@@ -128,12 +132,7 @@ class ApiKeyStore:
             target = next((item for item in items if item.get("id") == key_id), None)
             if target is None:
                 raise KeyError(key_id)
-            if target.get("revoked_at"):
-                return target
-            active_count = sum(1 for item in items if not item.get("revoked_at"))
-            if active_count <= 1:
-                raise ValueError("不能撤销最后一个有效 API Key，请先创建新 Key")
-            target["revoked_at"] = _now()
+            items.remove(target)
             self._save()
             return target
 
