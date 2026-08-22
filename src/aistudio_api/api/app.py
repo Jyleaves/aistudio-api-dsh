@@ -36,9 +36,9 @@ async def lifespan(app: FastAPI):
     from aistudio_api.application.account_service import AccountService
     from aistudio_api.application.account_rotator import init_rotator, RotationMode
 
-    generated_key = get_api_key_store().ensure()
-    if generated_key:
-        logger.warning("首次安装已生成 API Key，并写入项目 .env 文件。")
+    # Initialize the persistent store only. The first API Key is created from
+    # the web UI so it is never silently written to .env or logs.
+    get_api_key_store().ensure()
 
     client = AIStudioClient(
         port=runtime_state.browser_port,
@@ -130,7 +130,7 @@ async def auth_check(request: Request, response: Response):
 
     local_session = False
     local_host = request.client and request.client.host in {"127.0.0.1", "::1", "localhost"}
-    if settings.auth_enabled and settings.local_ui_auto_login and local_host:
+    if settings.local_ui_auto_login and local_host:
         session_token = request.cookies.get("asp_session")
         if not is_local_session_valid(session_token):
             session_token = create_local_session()

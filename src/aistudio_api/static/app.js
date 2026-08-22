@@ -7,6 +7,7 @@ function app() {
     apiKeys: [], apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
     updateInfo: { checking: false, updating: false, checked: false, available: false, dirty: false, error: '' },
+    settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },
     authEnabled: false,
@@ -26,6 +27,7 @@ function app() {
         this.loadAccounts(),
         this.loadRotation(),
         this.loadApiKeys(),
+        this.loadSettings(),
       ]);
       this.$watch('cfg', () => this.saveToCache(), { deep: true });
       this.$watch('model', () => this.saveToCache());
@@ -108,6 +110,7 @@ function app() {
       if (v === 'dashboard') this.loadStats();
       if (v === 'accounts') { this.loadAccounts(); this.loadRotation() }
       if (v === 'api-keys') this.loadApiKeys();
+      if (v === 'settings') this.loadSettings();
       if (v === 'update') this.checkUpdate();
     },
     newChat() { this.msgs = []; this.saveToCache(); this.showToast('已创建新对话') },
@@ -216,6 +219,26 @@ function app() {
         const d = await r.json();
         this.apiKeys = d.keys || [];
       } catch (e) { console.warn('API key list failed', e); }
+    },
+    async loadSettings() {
+      try {
+        const r = await this.apiFetch(`/settings?t=${Date.now()}`, { cache: 'no-store' });
+        if (r.ok) this.settings = (await r.json()).settings || {};
+      } catch (e) { console.warn('Settings load failed', e); }
+    },
+    async saveSettings() {
+      this.settingsSaving = true;
+      try {
+        const r = await this.apiFetch('/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.settings)
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || '设置保存失败'); return; }
+        this.settings = d.settings || this.settings;
+        this.showToast('设置已保存；部分项目需重启反代后生效');
+      } catch (e) { this.showToast('网络错误'); }
+      finally { this.settingsSaving = false; }
     },
     async createApiKey() {
       this.apiKeyCreate = { open: true, name: '', saving: false };

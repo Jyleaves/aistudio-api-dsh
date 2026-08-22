@@ -9,10 +9,29 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-# 加载 .env 文件（如果存在）
-load_dotenv()
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+def ensure_env_file() -> None:
+    """Create a minimal local .env on first startup without creating a secret."""
+    env_path = PROJECT_ROOT / ".env"
+    if env_path.exists():
+        return
+    content = (
+        "# AI Studio API local configuration\n"
+        "# API keys are created and revoked from the web UI; leave these blank here.\n"
+        "AISTUDIO_API_KEY=\n"
+        "AISTUDIO_API_KEYS=\n"
+    )
+    try:
+        env_path.write_text(content, encoding="utf-8")
+    except OSError:
+        # Read-only deployments can still run with environment defaults.
+        pass
+
+
+# Make first-run configuration self-contained. Never generate an API secret here.
+ensure_env_file()
+load_dotenv()
 
 
 def resolve_project_path(value: str | None, default: str) -> str:
@@ -203,6 +222,8 @@ class Settings:
     account_cooldown_seconds: int = int(os.getenv("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "60"))
     account_max_retries: int = int(os.getenv("AISTUDIO_ACCOUNT_MAX_RETRIES", "3"))
     max_concurrency: int = int(os.getenv("AISTUDIO_MAX_CONCURRENCY", "3"))
+    default_text_model: str = os.getenv("AISTUDIO_DEFAULT_TEXT_MODEL", DEFAULT_TEXT_MODEL)
+    default_image_model: str = os.getenv("AISTUDIO_DEFAULT_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
 
     @property
     def camoufox_port(self) -> int:
@@ -222,7 +243,10 @@ class Settings:
 
     @property
     def auth_enabled(self) -> bool:
-        return bool(self.api_keys) or Path(self.api_key_store_path).exists()
+        # The local management UI must remain reachable before the first Key is
+        # created. Protected API routes still reject remote requests without a
+        # valid Key (see api.dependencies.require_api_key).
+        return self.local_ui_auto_login or bool(self.api_keys) or Path(self.api_key_store_path).exists()
 
 
 settings = Settings()

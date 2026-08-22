@@ -30,14 +30,16 @@ def _extract_request_token(request: Request) -> str | None:
 
 
 def require_api_key(request: Request) -> None:
-    if not settings.auth_enabled:
-        return
-
     if is_local_session_valid(request.cookies.get("asp_session")):
         return
 
     token = _extract_request_token(request)
     if get_api_key_store().verify(token):
+        return
+
+    # Preserve the old opt-out behavior only when local UI auto-login is
+    # explicitly disabled and no key has ever been configured.
+    if not settings.auth_enabled:
         return
 
     raise HTTPException(

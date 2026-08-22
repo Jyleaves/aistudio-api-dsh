@@ -18,7 +18,7 @@ python -m venv .venv
 
 <https://github.com/CloakHQ/cloakbrowser/releases>
 
-复制 `.env.example` 为 `.env`。首次安装可以让 `AISTUDIO_API_KEY` 留空，首次启动会自动生成本地访问 Key：
+首次启动会自动创建项目 `.env` 和空的 API Key 存储，不会自动生成或写入任何 API Key，也不需要手动编辑 `.env`。如需预先创建配置文件，可执行：
 
 ```powershell
 Copy-Item .env.example .env
@@ -32,9 +32,9 @@ Copy-Item .env.example .env
 
 管理页面：<http://127.0.0.1:8090>
 
-首次登录 Google 账号时，把 `.env` 中的 `AISTUDIO_BROWSER_HEADLESS` 临时改为 `0`；登录完成后改回 `1`。账号 Cookie 保存在 `data\accounts\`，不要提交到 GitHub。
+打开管理页面后，进入“API Key 管理 → 新建 Key”，明文只显示一次；dsh 或其他客户端使用这里创建的 Key。首次登录 Google 账号时，进入“设置”把无头模式关闭；登录完成后再打开。账号 Cookie 保存在 `data\accounts\`，不要提交到 GitHub。
 
-API Key 管理支持同时保留多个有效 Key。创建新 Key 不会使旧 Key 失效；需要失效某个 Key 时，在列表中单独撤销即可。
+API Key 管理支持同时保留多个有效 Key。创建新 Key 不会使旧 Key 失效；需要失效某个 Key 时，在列表中单独撤销即可。反代的浏览器、代理、账号轮询、并发、超时、缓存、模型默认值和运行目录等可选配置统一在“设置”页面修改，保存到 `.env`；部分配置需要重启反代后生效。高级用户仍可手动编辑 `.env`，但不是必需操作。
 
 ## 2. 安装 dsh 插件
 
@@ -44,10 +44,10 @@ API Key 管理支持同时保留多个有效 Key。创建新 Key 不会使旧 Ke
 dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
 ```
 
-如果使用本地开发副本，也可以把命令中的 GitHub 地址替换为本地插件目录。设置 dsh 进程可见的反代 API Key：
+如果使用本地开发副本，也可以把命令中的 GitHub 地址替换为本地插件目录。将“API Key 管理”页面创建的 Key 设置为 dsh 进程可见的环境变量：
 
 ```powershell
-$env:AISTUDIO_API_KEY = "与反代 .env 中某个有效 Key 相同"
+$env:AISTUDIO_API_KEY = "在 API Key 管理页面创建的 Key"
 ```
 
 重启 dsh。插件 provider ID 是 `aistudio-gemini`，普通 Gemini 请求走原生 Gemini 接口；带有 dsh 函数工具的请求走反代 OpenAI 兼容接口，以保证 `read`、`edit`、`bash` 等工具调用稳定完成。
@@ -62,7 +62,7 @@ $env:AISTUDIO_API_KEY = "与反代 .env 中某个有效 Key 相同"
 | 显示名称 | `Google AI Studio` |
 | API 地址 | `http://127.0.0.1:8090/v1` |
 | API 协议 | `openai-completions` |
-| API 密钥 | 反代 `.env` 中的有效 API Key |
+| API 密钥 | “API Key 管理”页面创建的有效 API Key |
 
 点击“获取可用模型”。反代只返回 Gemini 开头的模型。如果自动获取失败，确认反代已启动、API 地址末尾为 `/v1`，并确认 API 密钥没有多余空格。
 

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from aistudio_api.config import PROJECT_ROOT, settings
+from aistudio_api.config import settings
 
 
 def _now() -> str:
@@ -68,49 +68,31 @@ class ApiKeyStore:
         }
 
     def ensure(self) -> str | None:
-        """Initialize the store and return a newly generated first secret, if any."""
+        """Initialize the store and import explicitly configured legacy keys.
+
+        A first run intentionally creates no API secret. Users create one in
+        the web UI, where the plaintext is shown exactly once.
+        """
         with self._lock:
             data = self._load()
-            if any(not item.get("revoked_at") for item in data["keys"]):
-                return None
-
+            changed = False
+            known_hashes = {item.get("hash") for item in data["keys"]}
             existing = [key for key in settings.api_keys if not _is_placeholder(key)]
-            generated: str | None = None
             if existing:
                 for key in sorted(existing):
-                    data["keys"].append(self._record(key, "环境变量 API Key"))
-            else:
-                generated = "sk-aistudio-" + secrets.token_urlsafe(32)
-                data["keys"].append(self._record(generated, "初始 API Key"))
-                self._persist_initial_env(generated)
-            self._save()
-            return generated
-
-    def _persist_initial_env(self, secret: str) -> None:
-        env_path = PROJECT_ROOT / ".env"
-        try:
-            if env_path.exists():
-                lines = env_path.read_text(encoding="utf-8").splitlines()
-            else:
-                lines = []
-            replaced = False
-            for index, line in enumerate(lines):
-                if line.strip().startswith("AISTUDIO_API_KEY="):
-                    lines[index] = f"AISTUDIO_API_KEY={secret}"
-                    replaced = True
-                    break
-            if not replaced:
-                lines.append(f"AISTUDIO_API_KEY={secret}")
-            env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        except OSError:
-            # The key remains usable through api_keys.json even if .env is read-only.
-            pass
+                    if _hash_key(key) not in known_hashes:
+                        data["keys"].append(self._record(key, "环境变量 API Key"))
+                        known_hashes.add(_hash_key(key))
+                        changed = True
+            if changed or not self.path.exists():
+                self._save()
+            return None
 
     def verify(self, secret: str | None) -> bool:
         if not secret:
             return False
         with self._lock:
-            self.ensure()
+            self._load()
             digest = _hash_key(secret.strip())
             return any(
                 not item.get("revoked_at") and hmac.compare_digest(item.get("hash", ""), digest)

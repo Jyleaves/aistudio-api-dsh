@@ -20,6 +20,122 @@ class ApiKeyCreateRequest(BaseModel):
     name: str | None = None
 
 
+class SettingsPayload(BaseModel):
+    browser_engine: str | None = None
+    browser_headless: bool | None = None
+    browser_channel: str | None = None
+    browser_executable_path: str | None = None
+    proxy_url: str | None = None
+    local_ui_auto_login: bool | None = None
+    timeout_replay: int | None = None
+    timeout_stream: int | None = None
+    timeout_capture: int | None = None
+    snapshot_cache_ttl: int | None = None
+    snapshot_cache_max: int | None = None
+    accounts_dir: str | None = None
+    tmp_dir: str | None = None
+    dump_raw_response: bool | None = None
+    dump_raw_response_dir: str | None = None
+    account_rotation_mode: str | None = None
+    account_cooldown_seconds: int | None = None
+    account_max_retries: int | None = None
+    max_concurrency: int | None = None
+    default_text_model: str | None = None
+    default_image_model: str | None = None
+
+
+_SETTINGS_FIELDS = {
+    "browser_engine": ("AISTUDIO_BROWSER", "str"),
+    "browser_headless": ("AISTUDIO_BROWSER_HEADLESS", "bool"),
+    "browser_channel": ("AISTUDIO_BROWSER_CHANNEL", "str"),
+    "browser_executable_path": ("AISTUDIO_BROWSER_EXECUTABLE", "str"),
+    "proxy_url": ("AISTUDIO_PROXY", "str"),
+    "local_ui_auto_login": ("AISTUDIO_LOCAL_UI_AUTO_LOGIN", "bool"),
+    "timeout_replay": ("AISTUDIO_TIMEOUT_REPLAY", "int"),
+    "timeout_stream": ("AISTUDIO_TIMEOUT_STREAM", "int"),
+    "timeout_capture": ("AISTUDIO_TIMEOUT_CAPTURE", "int"),
+    "snapshot_cache_ttl": ("AISTUDIO_SNAPSHOT_CACHE_TTL", "int"),
+    "snapshot_cache_max": ("AISTUDIO_SNAPSHOT_CACHE_MAX", "int"),
+    "accounts_dir": ("AISTUDIO_ACCOUNTS_DIR", "str"),
+    "tmp_dir": ("AISTUDIO_TMP_DIR", "str"),
+    "dump_raw_response": ("AISTUDIO_DUMP_RAW_RESPONSE", "bool"),
+    "dump_raw_response_dir": ("AISTUDIO_DUMP_RAW_RESPONSE_DIR", "str"),
+    "account_rotation_mode": ("AISTUDIO_ACCOUNT_ROTATION_MODE", "str"),
+    "account_cooldown_seconds": ("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "int"),
+    "account_max_retries": ("AISTUDIO_ACCOUNT_MAX_RETRIES", "int"),
+    "max_concurrency": ("AISTUDIO_MAX_CONCURRENCY", "int"),
+    "default_text_model": ("AISTUDIO_DEFAULT_TEXT_MODEL", "str"),
+    "default_image_model": ("AISTUDIO_DEFAULT_IMAGE_MODEL", "str"),
+}
+
+
+def _settings_snapshot() -> dict:
+    from aistudio_api.config import settings
+
+    values = {field: getattr(settings, field) for field in _SETTINGS_FIELDS}
+    values["browser_executable_path"] = values["browser_executable_path"] or ""
+    values["browser_channel"] = values["browser_channel"] or ""
+    values["proxy_url"] = values["proxy_url"] or ""
+    return {"settings": values, "restart_required": True}
+
+
+def _write_env_settings(values: dict[str, object]) -> None:
+    from aistudio_api.config import PROJECT_ROOT
+
+    env_path = PROJECT_ROOT / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    for field, value in values.items():
+        env_name, kind = _SETTINGS_FIELDS[field]
+        if kind == "bool":
+            serialized = "1" if value else "0"
+        else:
+            serialized = str(value or "")
+        replacement = f"{env_name}={serialized}"
+        found = False
+        for index, line in enumerate(lines):
+            if line.strip().startswith(f"{env_name}="):
+                lines[index] = replacement
+                found = True
+                break
+        if not found:
+            lines.append(replacement)
+    env_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+@protected_router.get("/settings")
+async def get_settings():
+    return _settings_snapshot()
+
+
+@protected_router.post("/settings")
+async def save_settings(payload: SettingsPayload):
+    from aistudio_api.config import resolve_project_path, settings
+
+    raw = payload.dict(exclude_none=True)
+    if not raw:
+        return _settings_snapshot()
+    if raw.get("browser_engine") not in (None, "chromium", "camoufox"):
+        raise HTTPException(400, detail="browser_engine 只能是 chromium 或 camoufox")
+    if raw.get("account_rotation_mode") not in (None, "round_robin", "lru", "least_rl"):
+        raise HTTPException(400, detail="account_rotation_mode 无效")
+    for name in ("timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
+        if name in raw and raw[name] < 1:
+            raise HTTPException(400, detail=f"{name} 必须大于 0")
+    try:
+        _write_env_settings(raw)
+        for field, value in raw.items():
+            if field in {"accounts_dir", "tmp_dir", "dump_raw_response_dir", "browser_executable_path"}:
+                value = resolve_project_path(value, "") if value else None
+            if field == "browser_channel" and value == "":
+                value = None
+            if field == "proxy_url" and value == "":
+                value = None
+            setattr(settings, field, value)
+        return _settings_snapshot()
+    except OSError as exc:
+        raise HTTPException(500, detail=f"保存 .env 失败: {exc}")
+
+
 def _run_git(*args: str, timeout: int = 45) -> subprocess.CompletedProcess[str]:
     from aistudio_api.config import PROJECT_ROOT
 
