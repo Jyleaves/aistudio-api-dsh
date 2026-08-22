@@ -209,6 +209,10 @@ class ModelCardResponse(BaseModel):
     object: Literal["model"] = "model"
     created: int
     owned_by: str
+    contextWindow: int | None = None
+    maxTokens: int | None = None
+    reasoning: bool | None = None
+    inputModalities: list[str] | None = None
 
 
 class ModelListResponse(BaseModel):

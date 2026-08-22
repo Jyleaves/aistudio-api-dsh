@@ -39,3 +39,15 @@ def normalize_gemini_model(value: object) -> str | None:
 def filter_gemini_models(values: Iterable[object]) -> list[str]:
     """Return stable, deduplicated Gemini-only model ids."""
     return sorted({model for value in values if (model := normalize_gemini_model(value))})
+
+
+def model_metadata(model_id: str) -> dict[str, object]:
+    """Return conservative metadata for model-aware clients such as dsh."""
+    normalized = model_id.removeprefix("models/").lower()
+    is_special_output = any(token in normalized for token in ("image", "live", "tts"))
+    return {
+        "contextWindow": 1_000_000,
+        "maxTokens": 65_536,
+        "reasoning": not is_special_output,
+        "inputModalities": ["text", "image"],
+    }

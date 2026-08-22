@@ -1,10 +1,11 @@
 
 function app() {
   return {
-    view: 'chat', sidebarOpen: false, configOpen: false, openSelect: null,
+    view: 'accounts', sidebarOpen: false, configOpen: false, openSelect: null,
     stats: {}, rotationMode: 'round_robin', rotCfg: { mode: 'round_robin', cooldown: 60 },
     accounts: [], rotationAccounts: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeyReveal: { open: false, name: '', key: '' },
+    apiKeyCreate: { open: false, name: '', saving: false },
     updateInfo: { checking: false, updating: false, checked: false, available: false, dirty: false, error: '' },
     models: [], model: '',
     auth: { token: '' },
@@ -19,11 +20,13 @@ function app() {
     async init() {
       await this.checkAuth();
       this.loadFromCache();
-      this.loadModels();
-      this.loadStats();
-      this.loadAccounts();
-      this.loadRotation();
-      this.loadApiKeys();
+      await Promise.all([
+        this.loadModels(),
+        this.loadStats(),
+        this.loadAccounts(),
+        this.loadRotation(),
+        this.loadApiKeys(),
+      ]);
       this.$watch('cfg', () => this.saveToCache(), { deep: true });
       this.$watch('model', () => this.saveToCache());
       this.$watch('auth.token', () => this.saveToCache());
@@ -104,7 +107,8 @@ function app() {
       this.view = v; this.sidebarOpen = false;
       if (v === 'dashboard') this.loadStats();
       if (v === 'accounts') { this.loadAccounts(); this.loadRotation() }
-      if (v === 'api-keys') { this.loadApiKeys(); this.checkUpdate() }
+      if (v === 'api-keys') this.loadApiKeys();
+      if (v === 'update') this.checkUpdate();
     },
     newChat() { this.msgs = []; this.saveToCache(); this.showToast('已创建新对话') },
     showToast(m) { this.toast.msg = m; this.toast.show = true; if (this.toast.t) clearTimeout(this.toast.t); this.toast.t = setTimeout(() => this.toast.show = false, 3000) },
@@ -172,7 +176,14 @@ function app() {
     },
 
     async loadModels() { try { const r = await this.apiFetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) this.model = this.models[0].id; this.saveToCache(); } catch (e) { } },
-    async loadStats() { try { const r = await this.apiFetch('/stats'); const d = await r.json(); this.stats = d.models || {} } catch (e) { } },
+    async loadStats() {
+      try {
+        const r = await this.apiFetch(`/stats?t=${Date.now()}`, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`stats request failed: ${r.status}`);
+        const d = await r.json();
+        this.stats = d.models || {};
+      } catch (e) { console.warn('Stats refresh failed', e); }
+    },
     async loadAccounts() {
       try {
         const cacheBust = `?t=${Date.now()}`;
@@ -206,19 +217,27 @@ function app() {
         this.apiKeys = d.keys || [];
       } catch (e) { console.warn('API key list failed', e); }
     },
-    async createApiKey(rotate = false) {
-      const name = window.prompt(rotate ? '新 API Key 名称' : 'API Key 名称', rotate ? '轮换 API Key' : 'API Key');
-      if (name === null) return;
+    async createApiKey() {
+      this.apiKeyCreate = { open: true, name: '', saving: false };
+      await this.$nextTick();
+      document.querySelector('[x-model="apiKeyCreate.name"]')?.focus();
+    },
+    async submitApiKeyCreate() {
+      const name = this.apiKeyCreate.name.trim();
+      if (!name) { this.showToast('请输入 API Key 名称'); return; }
+      this.apiKeyCreate.saving = true;
       try {
-        const r = await this.apiFetch(rotate ? '/auth/api-keys/rotate' : '/auth/api-keys', {
+        const r = await this.apiFetch('/auth/api-keys', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: name.trim() })
+          body: JSON.stringify({ name })
         });
         const d = await r.json().catch(() => ({}));
-        if (!r.ok) { this.showToast(d.detail || 'API Key 操作失败'); return; }
+        if (!r.ok) { this.showToast(d.detail || 'API Key 创建失败'); return; }
+        this.apiKeyCreate.open = false;
         this.apiKeyReveal = { open: true, name: d.name || name, key: d.key || '' };
         await this.loadApiKeys();
       } catch (e) { this.showToast('网络错误'); }
+      finally { this.apiKeyCreate.saving = false; }
     },
     async revokeApiKey(id) {
       if (!confirm('确定撤销这个 API Key 吗？已使用它的客户端会立即失效。')) return;

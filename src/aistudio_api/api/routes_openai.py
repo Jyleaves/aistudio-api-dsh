@@ -12,7 +12,11 @@ from aistudio_api.api.response_models import (
     OpenAIChatCompletionResponse,
 )
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
-from aistudio_api.infrastructure.gateway.model_catalog import FALLBACK_GEMINI_MODELS, filter_gemini_models
+from aistudio_api.infrastructure.gateway.model_catalog import (
+    FALLBACK_GEMINI_MODELS,
+    filter_gemini_models,
+    model_metadata,
+)
 
 from .dependencies import get_client
 from .schemas import ChatRequest, ImageRequest
@@ -71,7 +75,7 @@ MODEL_IDS = {m.id for m in MODELS}
 
 def _model_cards(model_ids: list[str] | tuple[str, ...]) -> list[ModelCardResponse]:
     ids = filter_gemini_models(model_ids)
-    return [ModelCardResponse(id=model_id, object="model", created=1700000000, owned_by="google") for model_id in ids]
+    return [ModelCardResponse(id=model_id, object="model", created=1700000000, owned_by="google", **model_metadata(model_id)) for model_id in ids]
 
 
 async def _available_model_ids(client: AIStudioClient, force: bool = False) -> list[str]:

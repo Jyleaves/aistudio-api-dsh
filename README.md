@@ -95,7 +95,9 @@ http://127.0.0.1:8090
 4. 登录完成后，账号 Cookie 会保存到项目内的 `data\accounts\acc_xxx\`。
 5. 账号列表支持轮询、手动激活和修改账号显示名称。
 
-管理页的“API Key 管理”支持查看脱敏 Key、创建、轮换和撤销。新 Key 的明文只在创建完成时显示一次；撤销最后一个有效 Key 会被阻止，避免把服务锁死。
+管理页的“API Key 管理”支持查看脱敏 Key、创建和撤销。新 Key 的明文只在创建完成时显示一次；撤销最后一个有效 Key 会被阻止，避免把服务锁死。
+
+可以同时保留多个有效 API Key。创建新 Key 不会自动使旧 Key 失效；需要失效某个 Key 时，在列表中单独撤销即可。
 
 账号 Cookie 会持久化保存。通常不需要定期重新登录，只有 Google 会话失效、修改密码、触发安全验证或账号被撤销时才需要重新登录。
 
@@ -134,6 +136,24 @@ http://127.0.0.1:8090
 ```
 
 保存后重启或刷新 pi-web。图片可以直接从 pi-web 上传；PDF 等文件由 pi-web 扩展和反代共同处理，具体能力取决于所选模型。
+
+## 七、配置 dsh
+
+`dsh-gemini-aistudio` 是独立的 dsh provider 插件，不会替换 dsh 的 DeepSeek provider 或通用 `llm-pi-ai`。先启动反代，再在 dsh 的 web profile 目录执行：
+
+```powershell
+dsh plugin --profile web add E:\Project\Codex\dsh-gemini-aistudio
+```
+
+如果插件目录位置不同，将命令中的路径替换为实际路径。设置 dsh 进程可见的反代 API Key：
+
+```powershell
+$env:AISTUDIO_API_KEY = "与 .env 中某个有效 Key 相同"
+```
+
+重启 dsh，在 provider 中选择 `aistudio-gemini`。插件会从反代的 `/v1/models` 自动读取仅 Gemini 开头的模型，并填充上下文窗口、最大输出 Token、图片输入和 reasoning 能力；一般不需要再手动填写模型元数据。反代新增模型后，在 dsh 重启或重新加载 provider 即可刷新列表。
+
+插件还提供原图/PDF 上传按钮、PDF 路径识别和 Google Search。dsh 的 `read`、`edit`、`bash` 等自定义工具请求会走反代的 OpenAI 兼容接口；普通 Gemini 请求走原生 Gemini 接口。Google Search 不会隐式和自定义函数工具混用，以避免 AI Studio 的工具配置冲突。
 
 ## 七、模型和配置
 

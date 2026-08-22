@@ -1,4 +1,4 @@
-from aistudio_api.infrastructure.gateway.model_catalog import filter_gemini_models
+from aistudio_api.infrastructure.gateway.model_catalog import filter_gemini_models, model_metadata
 
 
 def test_model_catalog_keeps_only_gemini_and_normalizes_labels():
@@ -9,3 +9,11 @@ def test_model_catalog_keeps_only_gemini_and_normalizes_labels():
         "Imagen 4",
         "Gemini_3.7_Flash",
     ]) == ["gemini-3.1-pro-preview", "gemini-3.7-flash"]
+
+
+def test_model_metadata_exposes_dsh_capabilities():
+    metadata = model_metadata("gemini-3.7-flash")
+    assert metadata["contextWindow"] == 1_000_000
+    assert metadata["maxTokens"] == 65_536
+    assert metadata["reasoning"] is True
+    assert metadata["inputModalities"] == ["text", "image"]

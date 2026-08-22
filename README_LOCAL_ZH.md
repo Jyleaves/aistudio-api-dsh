@@ -70,7 +70,9 @@ http://127.0.0.1:8090
 
 本机打开管理页会自动建立本地管理会话，不需要每次输入 API Key；从其他设备访问时输入 `.env` 中配置的 `AISTUDIO_API_KEY`。然后添加并登录 Google 账号。账号 Cookie 会保存在 `data/accounts/`，该目录已被 Git 忽略。
 
-“API Key 管理”页面支持创建、轮换和撤销 Key。新 Key 明文只显示一次，撤销最后一个有效 Key 会被阻止。
+“API Key 管理”页面支持创建和撤销 Key。新 Key 明文只显示一次，撤销最后一个有效 Key 会被阻止。
+
+可以同时保留多个有效 API Key。创建新 Key 不会自动使旧 Key 失效；需要失效某个 Key 时，在列表中单独撤销即可。
 
 ## 四、配置 pi-web
 
@@ -101,6 +103,19 @@ http://127.0.0.1:8090
 保存后重启或刷新 pi-web，在模型选择器中选择 `gemini-aistudio` 下的模型。图片可以直接从 pi-web 上传，反代会转换为 Gemini 请求格式。
 
 pi-web 的模型配置面板支持“发现模型”，它会读取反代的 `/v1/models`。模型发现是手动触发的，不会持续自动修改本地 `models.json`。
+
+## 五、配置 dsh
+
+安装独立的 `dsh-gemini-aistudio` 插件。以下命令中的路径替换为插件实际所在目录：
+
+```powershell
+dsh plugin --profile web add E:\Project\Codex\dsh-gemini-aistudio
+$env:AISTUDIO_API_KEY = "与反代中某个有效 API Key 相同"
+```
+
+重启 dsh 后选择 provider `aistudio-gemini`。插件会从反代 `/v1/models` 自动获取 Gemini 模型，并自动读取上下文窗口、最大输出 Token、图片输入和 reasoning 能力。反代更新模型后，重启 dsh 或重新加载 provider 即可刷新。
+
+插件支持原图/PDF 上传、PDF 路径识别和 Google Search。dsh 的自定义工具请求会走反代的 OpenAI 兼容接口，普通 Gemini 请求走原生 Gemini 接口。
 
 ## 五、测试接口
 
