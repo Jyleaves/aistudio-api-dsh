@@ -21,10 +21,17 @@ class ApiKeyCreateRequest(BaseModel):
 
 
 class SettingsPayload(BaseModel):
+    port: int | None = None
     browser_engine: str | None = None
+    browser_port: int | None = None
     browser_headless: bool | None = None
     browser_channel: str | None = None
     browser_executable_path: str | None = None
+    browser_chromium_sandbox: bool | None = None
+    browser_python: str | None = None
+    login_browser_port: int | None = None
+    auth_file: str | None = None
+    api_key_store_path: str | None = None
     proxy_url: str | None = None
     local_ui_auto_login: bool | None = None
     timeout_replay: int | None = None
@@ -45,10 +52,17 @@ class SettingsPayload(BaseModel):
 
 
 _SETTINGS_FIELDS = {
+    "port": ("AISTUDIO_PORT", "int"),
     "browser_engine": ("AISTUDIO_BROWSER", "str"),
+    "browser_port": ("AISTUDIO_BROWSER_PORT", "int"),
     "browser_headless": ("AISTUDIO_BROWSER_HEADLESS", "bool"),
     "browser_channel": ("AISTUDIO_BROWSER_CHANNEL", "str"),
     "browser_executable_path": ("AISTUDIO_BROWSER_EXECUTABLE", "str"),
+    "browser_chromium_sandbox": ("AISTUDIO_CHROMIUM_SANDBOX", "bool"),
+    "browser_python": ("AISTUDIO_BROWSER_PYTHON", "str"),
+    "login_browser_port": ("AISTUDIO_LOGIN_BROWSER_PORT", "int"),
+    "auth_file": ("AISTUDIO_AUTH_FILE", "str"),
+    "api_key_store_path": ("AISTUDIO_API_KEY_STORE", "str"),
     "proxy_url": ("AISTUDIO_PROXY", "str"),
     "local_ui_auto_login": ("AISTUDIO_LOCAL_UI_AUTO_LOGIN", "bool"),
     "timeout_replay": ("AISTUDIO_TIMEOUT_REPLAY", "int"),
@@ -76,6 +90,8 @@ def _settings_snapshot() -> dict:
     values["browser_executable_path"] = values["browser_executable_path"] or ""
     values["browser_channel"] = values["browser_channel"] or ""
     values["proxy_url"] = values["proxy_url"] or ""
+    values["browser_python"] = values["browser_python"] or ""
+    values["auth_file"] = values["auth_file"] or ""
     return {"settings": values, "restart_required": True}
 
 
@@ -118,17 +134,19 @@ async def save_settings(payload: SettingsPayload):
         raise HTTPException(400, detail="browser_engine 只能是 chromium 或 camoufox")
     if raw.get("account_rotation_mode") not in (None, "round_robin", "lru", "least_rl"):
         raise HTTPException(400, detail="account_rotation_mode 无效")
-    for name in ("timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
+    for name in ("port", "browser_port", "login_browser_port", "timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
         if name in raw and raw[name] < 1:
             raise HTTPException(400, detail=f"{name} 必须大于 0")
     try:
         _write_env_settings(raw)
         for field, value in raw.items():
-            if field in {"accounts_dir", "tmp_dir", "dump_raw_response_dir", "browser_executable_path"}:
+            if field in {"accounts_dir", "tmp_dir", "dump_raw_response_dir", "browser_executable_path", "auth_file", "api_key_store_path"}:
                 value = resolve_project_path(value, "") if value else None
             if field == "browser_channel" and value == "":
                 value = None
             if field == "proxy_url" and value == "":
+                value = None
+            if field == "browser_python" and value == "":
                 value = None
             setattr(settings, field, value)
         return _settings_snapshot()
