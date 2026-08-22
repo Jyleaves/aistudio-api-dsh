@@ -72,7 +72,7 @@ def resolve_project_path(value: str | None, default: str) -> str:
         candidate = PROJECT_ROOT / candidate
     return str(candidate.resolve())
 
-DEFAULT_TEXT_MODEL = os.getenv("AISTUDIO_DEFAULT_TEXT_MODEL", "gemma-4-31b-it")
+DEFAULT_TEXT_MODEL = os.getenv("AISTUDIO_DEFAULT_TEXT_MODEL", "gemini-3.7-flash")
 DEFAULT_IMAGE_MODEL = os.getenv("AISTUDIO_DEFAULT_IMAGE_MODEL", "gemini-3.1-flash-image-preview")
 DEFAULT_BROWSER_PORT = 9222
 

@@ -21,13 +21,15 @@ function app() {
     async init() {
       await this.checkAuth();
       this.loadFromCache();
+      // Load the server default before model discovery so a clean browser
+      // session starts with the configured default instead of alphabetical order.
+      await this.loadSettings();
       await Promise.all([
         this.loadModels(),
         this.loadStats(),
         this.loadAccounts(),
         this.loadRotation(),
         this.loadApiKeys(),
-        this.loadSettings(),
       ]);
       this.$watch('cfg', () => this.saveToCache(), { deep: true });
       this.$watch('model', () => this.saveToCache());
@@ -178,7 +180,7 @@ function app() {
       return html;
     },
 
-    async loadModels() { try { const r = await this.apiFetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) this.model = this.models[0].id; this.saveToCache(); } catch (e) { } },
+    async loadModels() { try { const r = await this.apiFetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) { const preferred = this.settings.default_text_model || 'gemini-3.7-flash'; this.model = this.models.some(m => m.id === preferred) ? preferred : this.models[0].id; } this.saveToCache(); } catch (e) { } },
     async loadStats() {
       try {
         const r = await this.apiFetch(`/stats?t=${Date.now()}`, { cache: 'no-store' });

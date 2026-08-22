@@ -30,7 +30,7 @@ from aistudio_api.infrastructure.gateway.model_catalog import filter_gemini_mode
 
 log = logging.getLogger("aistudio.session")
 
-AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat?model=gemma-4-31b-it"
+AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat?model=gemini-3.7-flash"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
 GOOGLE_LOGIN_BOOTSTRAP_URL = (
     "https://accounts.google.com/ServiceLogin?continue=https://aistudio.google.com"
