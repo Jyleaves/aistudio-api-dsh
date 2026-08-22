@@ -35,6 +35,9 @@ function app() {
       this.$watch('model', () => this.saveToCache());
       this.$watch('auth.token', () => this.saveToCache());
       document.addEventListener('click', () => this.openSelect = null);
+      // Check in the background so the sidebar can show a badge without
+      // delaying the rest of the management UI.
+      this.checkUpdate();
     },
 
     async checkAuth() {
