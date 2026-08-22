@@ -889,10 +889,14 @@ class LoginService:
 
             # 导航到 Google 登录页面
             logger.info("打开 Google 登录页面")
+            # Google keeps background requests open for a long time; waiting for
+            # networkidle made the login page look frozen before the user could
+            # interact with it. DOMContentLoaded is enough for the form.
             await page.goto(
                 self._build_login_url(ui_locale=ui_locale),
-                wait_until="networkidle",
+                wait_until="domcontentloaded",
             )
+            await page.wait_for_timeout(400)
 
             terminal_task = asyncio.create_task(
                 self._terminal_login_loop(session_id, page, login_done, headless=headless)
@@ -938,7 +942,7 @@ class LoginService:
                         wait_until="domcontentloaded",
                         timeout=15000,
                     )
-                    await page.wait_for_timeout(1500)
+                    await page.wait_for_timeout(500)
 
                     # 从页面文本、属性和当前 URL 提取邮箱。
                     detected_email = await page.evaluate("""

@@ -285,15 +285,20 @@ def to_gemini_parts(
         )
     for function_call in function_calls or []:
         payload = GeminiFunctionCallPayload(name=function_call.get("name", "unknown"))
+        payload.id = function_call.get("call_id") or function_call.get("id")
         if "args" in function_call:
             payload.args = function_call["args"]
         elif "arguments" in function_call:
             payload.args = function_call["arguments"]
         elif isinstance(function_call.get("raw"), list) and len(function_call["raw"]) > 1:
             payload.args = function_call["raw"][1]
+        if function_call.get("thought_signature"):
+            parts.append(GeminiPartResponse(thoughtSignature=function_call["thought_signature"], functionCall=payload))
+            continue
         parts.append(GeminiPartResponse(functionCall=payload))
     for function_response in function_responses or []:
         payload = GeminiFunctionResponsePayload(name=function_response.get("name", "unknown"))
+        payload.id = function_response.get("call_id") or function_response.get("id")
         if "args" in function_response:
             payload.response = function_response["args"]
         elif "arguments" in function_response:

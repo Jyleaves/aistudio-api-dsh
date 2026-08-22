@@ -265,6 +265,33 @@ def test_normalize_gemini_request_maps_official_text_model_fields():
     ]
 
 
+def test_normalize_gemini_request_does_not_implicitly_mix_default_tools_with_function_tools():
+    req = GeminiGenerateContentRequest.model_validate(
+        {
+            "contents": [{"role": "user", "parts": [{"text": "call the tool"}]}],
+            "tools": [{"functionDeclarations": [{"name": "read_file", "parameters": {"type": "object"}}]}],
+        }
+    )
+    normalized = normalize_gemini_request(req, "models/gemini-3.7-flash")
+    assert normalized["tools"] == [[None, [["read_file", None, [6]]]]]
+
+
+def test_normalize_gemini_request_preserves_function_call_round_trip_metadata():
+    req = GeminiGenerateContentRequest.model_validate(
+        {
+            "contents": [
+                {"role": "model", "parts": [{"functionCall": {"name": "read_file", "args": {"path": "a.txt"}, "id": "call_1"}, "thoughtSignature": "sig_1"}]},
+                {"role": "user", "parts": [{"functionResponse": {"name": "read_file", "response": {"text": "ok"}, "id": "call_1"}}]},
+            ],
+            "tools": [],
+        }
+    )
+    normalized = normalize_gemini_request(req, "models/gemini-3.7-flash")
+    assert normalized["contents"][0].parts[0].function_call == ("read_file", {"path": "a.txt"}, "call_1")
+    assert normalized["contents"][0].parts[0].thought_signature == "sig_1"
+    assert normalized["contents"][1].parts[0].function_response == ("read_file", {"text": "ok"}, "call_1")
+
+
 def test_normalize_openai_tools_encodes_function_tools_to_wire():
     req = ChatRequest(
         messages=[{"role": "user", "content": "hello"}],

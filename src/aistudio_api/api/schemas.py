@@ -92,6 +92,8 @@ class GeminiPart(BaseModel):
     fileData: Optional[GeminiFileData] = None
     thought: Optional[bool] = None
     thoughtSignature: Optional[str] = None
+    functionCall: Optional[dict[str, Any]] = None
+    functionResponse: Optional[dict[str, Any]] = None
 
 
 class GeminiContent(BaseModel):

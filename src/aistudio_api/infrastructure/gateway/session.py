@@ -26,6 +26,7 @@ from aistudio_api.infrastructure.browser.browser_engine import (
     sync_maximize_page_window,
 )
 from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
+from aistudio_api.infrastructure.gateway.model_catalog import filter_gemini_models
 
 log = logging.getLogger("aistudio.session")
 
@@ -157,6 +158,7 @@ class BrowserSession:
         self._snap_key: str | None = None
         self._templates: dict[str, dict[str, Any]] = {}
         self._bootstrap_template: dict[str, Any] | None = None
+        self._models_cache: tuple[float, list[str]] | None = None
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="aistudio-browser",
@@ -176,6 +178,10 @@ class BrowserSession:
     async def ensure_botguard_service(self):
         await self._run_sync(self._ensure_botguard_service_sync)
         return True
+
+    async def discover_models(self, force: bool = False) -> list[str]:
+        """Discover Gemini model labels exposed by the signed-in AI Studio UI."""
+        return await self._run_sync(self._discover_models_sync, force)
 
     async def import_cookies(self, cookie_string: str, auth_file: str | None = None) -> int:
         """注入 cookie 字符串到浏览器，访问页面获取完整 cookie，再导出保存。"""
@@ -535,7 +541,57 @@ class BrowserSession:
         self._profile_dir = self._derive_profile_dir(auth_file)
         self._templates.clear()
         self._bootstrap_template = None
+        self._models_cache = None
         self._close_sync()
+
+    def _discover_models_sync(self, force: bool = False) -> list[str]:
+        """Read the model picker from the current AI Studio page."""
+        now = time.time()
+        if not force and self._models_cache and now - self._models_cache[0] < 300:
+            return list(self._models_cache[1])
+
+        page = self._ensure_botguard_service_sync()
+        values: list[str] = []
+        try:
+            values.extend(page.evaluate(
+                """() => Array.from(document.querySelectorAll(
+                    'button,[role="button"],[role="option"],[role="menuitem"],option,[data-model]'
+                )).flatMap(el => [
+                    el.innerText, el.textContent, el.getAttribute('aria-label'),
+                    el.getAttribute('data-model'), el.getAttribute('data-value'),
+                    el.getAttribute('data-testid'), el.getAttribute('title'), el.getAttribute('value')
+                ]).filter(Boolean)"""
+            ) or [])
+            page.evaluate(
+                """() => {
+                    const nodes = Array.from(document.querySelectorAll(
+                        'button,[role="button"],[role="combobox"],[aria-haspopup]'
+                    ));
+                    const target = nodes.find(el => {
+                        const text = `${el.innerText || ''} ${el.getAttribute('aria-label') || ''}`;
+                        return /model|gemini|gemma/i.test(text) && el.offsetParent !== null;
+                    });
+                    if (target) {
+                        target.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                        target.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                        target.click();
+                    }
+                    return Boolean(target);
+                }"""
+            )
+            page.wait_for_timeout(350)
+            values.extend(page.evaluate(
+                """() => [document.body?.innerText || '', ...Array.from(document.querySelectorAll(
+                    '[role="option"],[role="menuitem"],[data-model],[data-value]'
+                )).flatMap(el => [el.innerText, el.textContent, el.getAttribute('data-model'), el.getAttribute('data-value')])].filter(Boolean)"""
+            ) or [])
+        except Exception as exc:
+            log.warning("AI Studio model discovery failed: %s", exc)
+
+        models = filter_gemini_models(values)
+        self._models_cache = (now, models)
+        log.info("AI Studio discovered %d Gemini models", len(models))
+        return list(models)
 
     def _ensure_browser_sync(self):
         if self._ctx is not None and self._hook_page is not None and not self._hook_page.is_closed():

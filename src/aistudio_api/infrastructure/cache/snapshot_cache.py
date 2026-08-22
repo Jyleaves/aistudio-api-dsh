@@ -16,12 +16,17 @@ logger = logging.getLogger("aistudio")
 class SnapshotCache:
     def __init__(self, ttl: int | None = None, max_size: int | None = None):
         self._cache: OrderedDict[str, tuple] = OrderedDict()
+        self._namespace = "default"
         self.ttl = ttl or settings.snapshot_cache_ttl
         self.max_size = max_size or settings.snapshot_cache_max
 
-    @staticmethod
-    def _hash(prompt: str) -> str:
-        return hashlib.sha256(prompt.encode()).hexdigest()
+    def set_namespace(self, namespace: str | None) -> None:
+        """隔离不同 Google 账号的 snapshot，避免切号后复用错误会话。"""
+        self._namespace = namespace or "default"
+
+    def _hash(self, prompt: str) -> str:
+        value = f"{self._namespace}\n{prompt}"
+        return hashlib.sha256(value.encode()).hexdigest()
 
     def get(self, prompt: str) -> Optional[tuple]:
         key = self._hash(prompt)

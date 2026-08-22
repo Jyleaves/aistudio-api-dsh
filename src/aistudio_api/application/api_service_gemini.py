@@ -195,6 +195,24 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                                     },
                                     ensure_ascii=False,
                                 ) + "\n\n"
+                            elif event_type == "tool_calls" and text:
+                                yield "data: " + json.dumps(
+                                    {
+                                        "candidates": [
+                                            {
+                                                "content": {
+                                                    "role": "model",
+                                                    "parts": [
+                                                        part.model_dump(mode="json", exclude_none=True)
+                                                        for part in to_gemini_parts("", function_calls=text)
+                                                    ],
+                                                },
+                                                "finishReason": None,
+                                            }
+                                        ]
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n\n"
                             elif event_type == "thinking" and text:
                                 yield "data: " + json.dumps(
                                     {

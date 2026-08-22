@@ -183,6 +183,10 @@
         loading: false,
 
         init() {
+          // 本机管理页使用 HttpOnly 本地会话，不需要重复输入 API Key。
+          fetch('/auth/check').then(r => r.json()).then(data => {
+            if (data.local_session) window.location.href = '/';
+          }).catch(() => {});
           // 检查是否已有 token
           const savedToken = localStorage.getItem('asp_api_token');
           if (savedToken) {

@@ -32,6 +32,11 @@
           <path d="M23 21v-2a4 4 0 00-3-3.87" />
           <path d="M16 3.13a4 4 0 010 7.75" />
         </svg> 账号管理 </button>
+      <button class="nav-item" :class="{active:view==='api-keys'}" @click="go('api-keys')">
+        <svg viewBox="0 0 24 24">
+          <circle cx="7.5" cy="15.5" r="4.5" />
+          <path d="M11 12l9-9 3 3-2 2 1.5 1.5-2 2L19 10l-3 3" />
+        </svg> API Key 管理 </button>
     </div>
     <div class="sidebar-footer">
       <div class="dot"></div><span>系统在线</span>
@@ -62,7 +67,7 @@
           </div>
         </template>
         <template x-if="view!=='chat'">
-          <span class="topbar-title" x-text="view==='dashboard'?'控制面板':'账号管理'"></span>
+          <span class="topbar-title" x-text="view==='dashboard'?'控制面板':view==='accounts'?'账号管理':'API Key 管理'"></span>
         </template>
       </div>
       <div class="topbar-right" @click.stop>
@@ -401,6 +406,65 @@
         </div>
       </div>
     </div>
+    <!-- API Key management -->
+    <div class="page-wrap" :class="{active:view==='api-keys'}">
+      <div class="scroll-area">
+        <div class="page-pad">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px">
+            <h1 style="font-size:24px;font-weight:700">API Key 管理</h1>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn" @click="checkUpdate()" :disabled="updateInfo.checking"
+                x-text="updateInfo.checking?'检查中...':'检查更新'"></button>
+              <button class="btn btn-primary" @click="startUpdate()" :disabled="updateInfo.updating||updateInfo.dirty"
+                x-show="updateInfo.available" x-text="updateInfo.updating?'更新中...':'立即更新'"></button>
+              <button class="btn" @click="createApiKey(false)">新建 Key</button>
+              <button class="btn btn-primary" @click="createApiKey(true)">轮换 Key</button>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:24px">
+            <div class="card-head">更新状态</div>
+            <div style="padding:20px;color:var(--muted);font-size:14px">
+              <template x-if="!updateInfo.checked"><span>点击“检查更新”查看 GitHub 仓库是否有新版本。</span></template>
+              <template x-if="updateInfo.checked && updateInfo.error"><span x-text="updateInfo.error"></span></template>
+              <template x-if="updateInfo.checked && !updateInfo.error && updateInfo.dirty"><span>检测到未提交修改。为避免覆盖本地代码，暂时不能一键更新。</span></template>
+              <template x-if="updateInfo.checked && !updateInfo.error && !updateInfo.dirty && !updateInfo.available"><span>当前已经是最新版本。</span></template>
+              <template x-if="updateInfo.checked && !updateInfo.error && !updateInfo.dirty && updateInfo.available"><span>发现新版本，可点击“立即更新”。反代会自动停止、更新依赖并重启。</span></template>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>访问密钥</span><span style="font-size:13px;color:var(--muted)">只显示脱敏值，明文仅在创建时显示一次</span></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>名称</th><th>Key 前缀</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
+                <tbody>
+                  <template x-for="k in apiKeys" :key="k.id">
+                    <tr>
+                      <td x-text="k.name"></td>
+                      <td style="font-family:monospace" x-text="k.prefix+'...'" ></td>
+                      <td x-text="fmtDate(k.created_at)"></td>
+                      <td><span class="badge" :class="k.active?'badge-green':'badge-gray'" x-text="k.active?'有效':'已撤销'"></span></td>
+                      <td><button class="btn btn-sm btn-danger" @click="revokeApiKey(k.id)" x-show="k.active">撤销</button></td>
+                    </tr>
+                  </template>
+                  <tr x-show="!apiKeys.length"><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">暂无 API Key</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- API Key reveal modal -->
+  <div class="modal-overlay" x-show="apiKeyReveal.open" x-cloak @click.self="apiKeyReveal.open=false" x-transition.opacity>
+    <div class="modal" x-show="apiKeyReveal.open" x-transition>
+      <div class="modal-head"><span>请立即保存 API Key</span><button class="modal-close" @click="apiKeyReveal.open=false">&times;</button></div>
+      <div class="modal-body">
+        <div style="color:var(--muted);font-size:14px">该 Key 的明文只会显示这一次，关闭后无法从面板恢复。</div>
+        <div class="modal-field"><label x-text="apiKeyReveal.name"></label><input class="modal-input" readonly x-model="apiKeyReveal.key" @click="$event.target.select()"></div>
+      </div>
+      <div class="modal-foot"><button class="btn btn-primary" @click="navigator.clipboard?.writeText(apiKeyReveal.key);showToast('已复制');apiKeyReveal.open=false">复制并关闭</button></div>
+    </div>
   </div>
   <!-- Account Edit Modal -->
   <div class="modal-overlay" x-show="accountEdit.open" x-cloak @click.self="accountEdit.open=false"
@@ -467,7 +531,7 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260822"></script>
   <script defer src="/static/alpine.min.js"></script>
 </body>
 

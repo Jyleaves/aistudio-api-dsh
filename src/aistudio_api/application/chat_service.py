@@ -709,6 +709,24 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                 continue
             if part.fileData is not None:
                 raise ValueError("fileData is not supported yet")
+            if part.functionCall is not None:
+                name = part.functionCall.get("name")
+                if not name:
+                    raise ValueError("functionCall.name is required")
+                args = part.functionCall.get("args", part.functionCall.get("arguments", {}))
+                call_id = part.functionCall.get("id")
+                function_call = (name, args, call_id) if call_id else (name, args)
+                parts.append(AistudioPart(function_call=function_call, thought_signature=part.thoughtSignature))
+                continue
+            if part.functionResponse is not None:
+                name = part.functionResponse.get("name")
+                if not name:
+                    raise ValueError("functionResponse.name is required")
+                response = part.functionResponse.get("response", {})
+                call_id = part.functionResponse.get("id")
+                function_response = (name, response, call_id) if call_id else (name, response)
+                parts.append(AistudioPart(function_response=function_response))
+                continue
 
         contents.append(AistudioContent(role=role, parts=parts))
 
@@ -763,11 +781,11 @@ def normalize_gemini_request(req, requested_model: str, tmp_dir: str = "/tmp") -
                 seen_builtin.update(builtin_tool_names)
 
     # 注入 config.yaml 的 default_tools（内置工具，如 google_search）。
-    #   req.tools is None → 客户端没传 tools，注入（原行为）
-    #   req.tools 非空    → 客户端带了自定义工具，也合并 default_tools
-    #                       （之前被跳过，导致模型想用内置工具时不可用）
-    #   req.tools == []   → 客户端明确禁用所有工具，跳过（保留"空数组=禁用"语义）
-    if model_defaults.default_tools and not (req.tools is not None and len(req.tools) == 0):
+    # Gemini 3 要求 built-in tools + function declarations 额外设置
+    # include_server_side_tool_invocations。当前反代尚未稳定编码该字段，
+    # 因此显式传入自定义函数时不再隐式混入 default_tools；调用方若需要
+    # 内置工具，应在同一个请求中显式声明，避免隐式组合导致 HTTP 400。
+    if model_defaults.default_tools and req.tools is None:
         default_tool_names = _filter_default_tools_for_model(
             model_defaults.default_tools,
             is_image_model=model_defaults.is_image_model,

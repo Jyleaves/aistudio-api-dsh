@@ -65,6 +65,10 @@ class AIStudioClient:
         if self._session is not None:
             await self._session.switch_auth(auth_file)
 
+    async def discover_models(self, force: bool = False) -> list[str]:
+        """Return the Gemini-only model catalog from the signed-in AI Studio UI."""
+        return await self._session.discover_models(force=force)
+
     def clear_snapshot_cache(self) -> None:
         """清除 snapshot 缓存。"""
         _snapshot_cache.clear()
@@ -104,6 +108,12 @@ class AIStudioClient:
         contents: Optional[list[AistudioContent]] = None,
         force_refresh: bool = False,
     ) -> Optional[CapturedRequest]:
+        # 进程启动时已有 active account 的场景也要正确选择 snapshot 命名空间。
+        from aistudio_api.api.state import runtime_state
+        account_service = runtime_state.account_service
+        active_account = account_service.get_active_account() if account_service else None
+        if active_account is not None and hasattr(_snapshot_cache, "set_namespace"):
+            _snapshot_cache.set_namespace(active_account.id)
         return await self._capture_service.capture(
             prompt=prompt,
             model=model,

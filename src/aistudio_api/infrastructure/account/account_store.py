@@ -21,7 +21,10 @@ def _resolve_accounts_dir() -> Path:
     """发现 accounts 目录，默认为 data/accounts。"""
     env = os.getenv("AISTUDIO_ACCOUNTS_DIR")
     if env:
-        return Path(env).resolve()
+        candidate = Path(env).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(__file__).resolve().parents[4] / candidate
+        return candidate.resolve()
     for root in _SEARCH_ROOTS:
         candidate = root / "data" / "accounts"
         if candidate.is_dir():

@@ -15,11 +15,7 @@
 
 ## 二、安装
 
-在 PowerShell 中进入项目目录：
-
-```powershell
-cd E:\Project\GeminiAPI
-```
+在仓库根目录打开 PowerShell。下面的命令都使用项目相对路径，不要求项目位于固定目录。
 
 创建虚拟环境并安装依赖：
 
@@ -32,7 +28,7 @@ python -m venv .venv
 项目使用 CloakBrowser Chromium。将对应的 Windows 浏览器文件放到：
 
 ```text
-E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
+cloakbrowser-chromium\chrome.exe
 ```
 
 浏览器文件从 [CloakBrowser Releases](https://github.com/CloakHQ/cloakbrowser/releases) 获取。不要将浏览器压缩包、浏览器目录、Cookie 或日志提交到公开仓库。
@@ -51,14 +47,15 @@ Copy-Item .env.example .env
 AISTUDIO_PORT=8090
 AISTUDIO_BROWSER=chromium
 AISTUDIO_BROWSER_HEADLESS=1
-AISTUDIO_BROWSER_EXECUTABLE=E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
-CLOAKBROWSER_BINARY_PATH=E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
-AISTUDIO_API_KEY=替换为随机访问令牌
-AISTUDIO_ACCOUNTS_DIR=E:\Project\GeminiAPI\data\accounts
-AISTUDIO_TMP_DIR=E:\Project\GeminiAPI\data\tmp
+AISTUDIO_BROWSER_EXECUTABLE=cloakbrowser-chromium\chrome.exe
+AISTUDIO_API_KEY=留空则首次启动自动生成
+AISTUDIO_ACCOUNTS_DIR=data\accounts
+AISTUDIO_TMP_DIR=data\tmp
 ```
 
 `AISTUDIO_API_KEY` 是访问本地反代的令牌，不是 Google API Key。公开部署时必须使用强随机值；本地管理页和 API 请求都需要使用它。
+
+如果是首次安装，可以不填写 `AISTUDIO_API_KEY`。首次启动会自动生成随机 Key 并写入项目根目录的 `.env`，同时保存到 `data\api_keys.json`。本机打开管理页时会自动建立本地管理会话，不会每次重复要求输入；远程访问仍必须提供 API Key。
 
 首次添加账号时，如果需要看到登录浏览器，将 `AISTUDIO_BROWSER_HEADLESS` 临时改为 `0`。登录完成后改回 `1`。
 
@@ -92,11 +89,13 @@ http://127.0.0.1:8090
 
 ## 五、添加和管理 Google 账号
 
-1. 打开管理页并输入 `.env` 中的 `AISTUDIO_API_KEY`。
+1. 本机打开管理页会自动建立本地管理会话，无需重复输入 API Key；从其他设备访问时输入 `.env` 中的 `AISTUDIO_API_KEY`。
 2. 进入“账号管理”，点击添加账号。
 3. 在弹出的 Google 登录浏览器中完成登录。
-4. 登录完成后，账号 Cookie 会保存到 `data/accounts/acc_xxx/`。
+4. 登录完成后，账号 Cookie 会保存到项目内的 `data\accounts\acc_xxx\`。
 5. 账号列表支持轮询、手动激活和修改账号显示名称。
+
+管理页的“API Key 管理”支持查看脱敏 Key、创建、轮换和撤销。新 Key 的明文只在创建完成时显示一次；撤销最后一个有效 Key 会被阻止，避免把服务锁死。
 
 账号 Cookie 会持久化保存。通常不需要定期重新登录，只有 Google 会话失效、修改密码、触发安全验证或账号被撤销时才需要重新登录。
 
@@ -157,15 +156,26 @@ http://127.0.0.1:8090
 
 ## 八、更新项目
 
-更新前备份 `.env` 和 `data/`，并检查本地修改。上游更新或重新安装依赖后，需要重新验证：
+双击项目根目录的 `update-aistudio-api.bat`。更新脚本会：
 
-1. 管理页能否打开；
-2. Google 账号是否仍显示并可激活；
-3. `/v1/models` 是否返回模型；
-4. 文本、图片和 PDF 请求是否正常；
-5. pi-web 是否仍能连接。
+1. 检查 Git 工作区，发现未提交代码修改时停止，避免覆盖本地补丁；
+2. 使用当前分支配置的上游分支执行 `git pull --ff-only`；
+3. 在项目虚拟环境中同步 `requirements.txt`；
+4. 保留 `.env`、`data\`、`.venv\` 和本地浏览器文件，不需要重新配置账号。
 
-直接更新依赖可能覆盖本地补丁。更新后应重新运行相应安装脚本，并重启反代。
+反代运行中时，使用：
+
+```powershell
+.\update-aistudio-api.ps1 -Restart
+```
+
+如果只想检查是否满足自动更新条件：
+
+```powershell
+.\update-aistudio-api.ps1 -CheckOnly
+```
+
+更新完成后建议验证管理页、账号列表、`/v1/models` 和一次文本请求。若 GitHub 仓库中的本地修改尚未提交，先提交或备份后再更新。
 
 ## 九、许可证
 

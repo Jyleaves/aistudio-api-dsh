@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 from aistudio_api.config import settings
 
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.infrastructure.auth.api_key_store import get_api_key_store, is_local_session_valid
 
 from .state import runtime_state
 
@@ -32,8 +33,11 @@ def require_api_key(request: Request) -> None:
     if not settings.auth_enabled:
         return
 
+    if is_local_session_valid(request.cookies.get("asp_session")):
+        return
+
     token = _extract_request_token(request)
-    if token in settings.api_keys:
+    if get_api_key_store().verify(token):
         return
 
     raise HTTPException(

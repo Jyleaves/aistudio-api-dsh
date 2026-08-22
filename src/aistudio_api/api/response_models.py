@@ -135,11 +135,13 @@ class GeminiUsageMetadata(BaseModel):
 class GeminiFunctionCallPayload(BaseModel):
     name: str
     args: Any | None = None
+    id: str | None = None
 
 
 class GeminiFunctionResponsePayload(BaseModel):
     name: str
     response: Any | None = None
+    id: str | None = None
 
 
 class GeminiInlineDataResponse(BaseModel):

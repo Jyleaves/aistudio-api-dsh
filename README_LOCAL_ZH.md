@@ -13,7 +13,7 @@
 建议使用 Python 3.11 或更高版本，并使用虚拟环境，不要把依赖安装到系统 Python 或 base 环境：
 
 ```powershell
-cd E:\Project\GeminiAPI
+# 在项目根目录打开 PowerShell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m pip install playwright cloakbrowser
@@ -22,7 +22,7 @@ python -m venv .venv
 `cloakbrowser` 需要一个专用的 Chromium 浏览器。不要把这个浏览器文件提交到 GitHub；请从其发布页下载对应版本并解压到项目目录，例如：
 
 ```text
-E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
+cloakbrowser-chromium\chrome.exe
 ```
 
 下载地址：
@@ -37,11 +37,10 @@ E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
 AISTUDIO_PORT=8090
 AISTUDIO_BROWSER=chromium
 AISTUDIO_BROWSER_HEADLESS=1
-AISTUDIO_BROWSER_EXECUTABLE=E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
-CLOAKBROWSER_BINARY_PATH=E:\Project\GeminiAPI\cloakbrowser-chromium\chrome.exe
+AISTUDIO_BROWSER_EXECUTABLE=cloakbrowser-chromium\chrome.exe
 AISTUDIO_API_KEY=change-this-to-a-random-token
-AISTUDIO_ACCOUNTS_DIR=E:\Project\GeminiAPI\data\accounts
-AISTUDIO_TMP_DIR=E:\Project\GeminiAPI\data\tmp
+AISTUDIO_ACCOUNTS_DIR=data\accounts
+AISTUDIO_TMP_DIR=data\tmp
 ```
 
 `AISTUDIO_API_KEY` 是本地反代访问 Token，不是 Google Gemini API Key。请改成自己的随机字符串，不要把 `.env` 提交到公开仓库。
@@ -59,7 +58,7 @@ AISTUDIO_BROWSER_HEADLESS=0
 命令行启动：
 
 ```powershell
-cd E:\Project\GeminiAPI
+# 在项目根目录执行
 .\.venv\Scripts\python.exe main.py server --port 8090
 ```
 
@@ -69,7 +68,9 @@ cd E:\Project\GeminiAPI
 http://127.0.0.1:8090
 ```
 
-在管理页输入 `.env` 中配置的 `AISTUDIO_API_KEY`，然后添加并登录 Google 账号。账号 Cookie 会保存在 `data/accounts/`，该目录已被 Git 忽略。
+本机打开管理页会自动建立本地管理会话，不需要每次输入 API Key；从其他设备访问时输入 `.env` 中配置的 `AISTUDIO_API_KEY`。然后添加并登录 Google 账号。账号 Cookie 会保存在 `data/accounts/`，该目录已被 Git 忽略。
+
+“API Key 管理”页面支持创建、轮换和撤销 Key。新 Key 明文只显示一次，撤销最后一个有效 Key 会被阻止。
 
 ## 四、配置 pi-web
 
@@ -127,16 +128,15 @@ Invoke-RestMethod http://127.0.0.1:8090/v1/chat/completions `
   -Method Post -Headers $headers -Body $body
 ```
 
-## 六、更新上游项目
+## 六、更新项目
 
-本仓库来自上游项目。更新前请先备份 `.env` 和 `data/`，再检查本地修改：
+双击 `update-aistudio-api.bat`，或在项目根目录执行：
 
 ```powershell
-git fetch upstream
-git log --oneline HEAD..upstream/master
+.\update-aistudio-api.ps1 -Restart
 ```
 
-不要直接覆盖本地 Windows 修复和模型列表修改。建议逐个查看上游变更后再合并，并重新验证登录、文本请求和图片请求。
+脚本会检查未提交修改、拉取当前分支的上游提交，并在 `.venv` 中更新依赖；`.env`、`data\`、`.venv\` 和浏览器文件不需要重新配置。存在未提交代码修改时会停止，避免覆盖本地修复。
 
 ## 安全注意事项
 

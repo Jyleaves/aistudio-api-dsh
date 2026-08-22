@@ -4,6 +4,8 @@ function app() {
     view: 'chat', sidebarOpen: false, configOpen: false, openSelect: null,
     stats: {}, rotationMode: 'round_robin', rotCfg: { mode: 'round_robin', cooldown: 60 },
     accounts: [], rotationAccounts: {}, activeId: '', activeAccount: {},
+    apiKeys: [], apiKeyReveal: { open: false, name: '', key: '' },
+    updateInfo: { checking: false, updating: false, checked: false, available: false, dirty: false, error: '' },
     models: [], model: '',
     auth: { token: '' },
     authEnabled: false,
@@ -21,6 +23,7 @@ function app() {
       this.loadStats();
       this.loadAccounts();
       this.loadRotation();
+      this.loadApiKeys();
       this.$watch('cfg', () => this.saveToCache(), { deep: true });
       this.$watch('model', () => this.saveToCache());
       this.$watch('auth.token', () => this.saveToCache());
@@ -35,6 +38,10 @@ function app() {
 
         if (this.authEnabled) {
           const token = localStorage.getItem('asp_api_token');
+          if (data.local_session) {
+            this.auth.token = token || '';
+            return;
+          }
           if (!token) {
             window.location.href = '/static/login.html';
             return;
@@ -55,7 +62,8 @@ function app() {
       }
     },
 
-    logout() {
+    async logout() {
+      await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
       localStorage.removeItem('asp_api_token');
       this.auth.token = '';
       window.location.href = '/static/login.html';
@@ -92,7 +100,12 @@ function app() {
       localStorage.removeItem('asp_models');
       location.reload();
     },
-    go(v) { this.view = v; this.sidebarOpen = false; if (v === 'dashboard') this.loadStats(); if (v === 'accounts') { this.loadAccounts(); this.loadRotation() } },
+    go(v) {
+      this.view = v; this.sidebarOpen = false;
+      if (v === 'dashboard') this.loadStats();
+      if (v === 'accounts') { this.loadAccounts(); this.loadRotation() }
+      if (v === 'api-keys') { this.loadApiKeys(); this.checkUpdate() }
+    },
     newChat() { this.msgs = []; this.saveToCache(); this.showToast('已创建新对话') },
     showToast(m) { this.toast.msg = m; this.toast.show = true; if (this.toast.t) clearTimeout(this.toast.t); this.toast.t = setTimeout(() => this.toast.show = false, 3000) },
     toggleSelect(k, e) { e.stopPropagation(); this.openSelect = this.openSelect === k ? null : k },
@@ -160,16 +173,91 @@ function app() {
 
     async loadModels() { try { const r = await this.apiFetch('/v1/models'); const d = await r.json(); this.models = d.data || []; if (!this.model && this.models.length) this.model = this.models[0].id; this.saveToCache(); } catch (e) { } },
     async loadStats() { try { const r = await this.apiFetch('/stats'); const d = await r.json(); this.stats = d.models || {} } catch (e) { } },
-    async loadAccounts() { try { const [a, b] = await Promise.all([this.apiFetch('/accounts').then(r => r.json()), this.apiFetch('/accounts/active').then(r => r.json())]); this.accounts = a || []; this.activeId = b?.id || ''; this.activeAccount = b || {} } catch (e) { } },
-    async loadRotation() { try { const r = await this.apiFetch('/rotation'); const d = await r.json(); this.rotationMode = d.mode || 'round_robin'; this.rotCfg.mode = d.mode || 'round_robin'; this.rotCfg.cooldown = d.cooldown_seconds || 60; this.rotationAccounts = d.accounts || {} } catch (e) { } },
+    async loadAccounts() {
+      try {
+        const cacheBust = `?t=${Date.now()}`;
+        const [ar, br] = await Promise.all([
+          this.apiFetch(`/accounts${cacheBust}`, { cache: 'no-store' }),
+          this.apiFetch(`/accounts/active${cacheBust}`, { cache: 'no-store' })
+        ]);
+        if (!ar.ok || !br.ok) throw new Error('account refresh failed');
+        const [a, b] = await Promise.all([ar.json(), br.json()]);
+        this.accounts = Array.isArray(a) ? a : [];
+        this.activeId = b?.id || '';
+        this.activeAccount = b || {};
+      } catch (e) { console.warn('Account refresh failed', e); }
+    },
+    async refreshAccountData() { await Promise.all([this.loadAccounts(), this.loadRotation()]); },
+    async loadRotation() {
+      try {
+        const r = await this.apiFetch(`/rotation?t=${Date.now()}`, { cache: 'no-store' });
+        const d = await r.json();
+        this.rotationMode = d.mode || 'round_robin';
+        this.rotCfg.mode = d.mode || 'round_robin';
+        this.rotCfg.cooldown = d.cooldown_seconds || 60;
+        this.rotationAccounts = d.accounts || {};
+      } catch (e) { console.warn('Rotation refresh failed', e); }
+    },
+    async loadApiKeys() {
+      try {
+        const r = await this.apiFetch(`/auth/api-keys?t=${Date.now()}`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        this.apiKeys = d.keys || [];
+      } catch (e) { console.warn('API key list failed', e); }
+    },
+    async createApiKey(rotate = false) {
+      const name = window.prompt(rotate ? '新 API Key 名称' : 'API Key 名称', rotate ? '轮换 API Key' : 'API Key');
+      if (name === null) return;
+      try {
+        const r = await this.apiFetch(rotate ? '/auth/api-keys/rotate' : '/auth/api-keys', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim() })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || 'API Key 操作失败'); return; }
+        this.apiKeyReveal = { open: true, name: d.name || name, key: d.key || '' };
+        await this.loadApiKeys();
+      } catch (e) { this.showToast('网络错误'); }
+    },
+    async revokeApiKey(id) {
+      if (!confirm('确定撤销这个 API Key 吗？已使用它的客户端会立即失效。')) return;
+      try {
+        const r = await this.apiFetch(`/auth/api-keys/${id}/revoke`, { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || '撤销失败'); return; }
+        await this.loadApiKeys();
+        this.showToast('API Key 已撤销');
+      } catch (e) { this.showToast('网络错误'); }
+    },
+    async checkUpdate() {
+      this.updateInfo.checking = true;
+      try {
+        const r = await this.apiFetch(`/update/check?t=${Date.now()}`, { cache: 'no-store' });
+        const d = await r.json().catch(() => ({}));
+        this.updateInfo = { ...this.updateInfo, ...d, checking: false, checked: true, error: d.error || '' };
+      } catch (e) {
+        this.updateInfo.checking = false; this.updateInfo.checked = true; this.updateInfo.error = '检查更新失败';
+      }
+    },
+    async startUpdate() {
+      if (!confirm('更新会停止并重启反代，确定继续吗？')) return;
+      this.updateInfo.updating = true;
+      try {
+        const r = await this.apiFetch('/update', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.showToast(d.detail || '更新失败'); this.updateInfo.updating = false; return; }
+        this.showToast('更新已开始，反代即将重启');
+      } catch (e) { this.showToast('更新进程已启动，页面即将断开'); }
+    },
 
     get accountRows() { return this.accounts.map(a => ({ ...a, ...(this.rotationAccounts[a.id] || {}) })) },
     get totalReqs() { return Object.values(this.stats).reduce((s, v) => s + (v.requests || 0), 0) },
     get totalRL() { return Object.values(this.stats).reduce((s, v) => s + (v.rate_limited || 0), 0) },
 
     async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
-    async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); this.showToast('已切换账号'); this.loadAccounts() } catch (e) { this.showToast('切换失败') } },
-    async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); this.showToast('已激活'); this.loadAccounts(); this.loadRotation() } catch (e) { this.showToast('激活失败') } },
+    async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); await this.refreshAccountData(); this.showToast('已切换账号') } catch (e) { this.showToast('切换失败') } },
+    async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); await this.refreshAccountData(); this.showToast('已激活') } catch (e) { this.showToast('激活失败') } },
     openAccountEdit(account) {
       this.accountEdit = { open: true, id: account.id, name: account.name || '', saving: false };
     },
@@ -187,8 +275,7 @@ function app() {
         if (!r.ok) { this.showToast(d.detail || '保存失败'); return }
         this.showToast('账号信息已保存');
         edit.open = false;
-        this.loadAccounts();
-        this.loadRotation();
+        await this.refreshAccountData();
       } catch (e) { this.showToast('网络错误') }
       finally { edit.saving = false }
     },
@@ -216,31 +303,39 @@ function app() {
     },
     async pollLoginStatus(sessionId) {
       const deadline = Date.now() + 305000;
+      let delay = 250;
+      let transientFailures = 0;
       while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, delay));
         try {
-          const r = await this.apiFetch(`/accounts/login/status/${sessionId}`);
+          const r = await this.apiFetch(`/accounts/login/status/${sessionId}?t=${Date.now()}`, { cache: 'no-store' });
           const d = await r.json().catch(() => ({}));
           if (!r.ok) {
+            if (r.status >= 500) {
+              transientFailures += 1;
+              if (transientFailures < 6) { delay = Math.min(2000, delay + 250); continue; }
+            }
             this.showToast(d.detail || '查询登录状态失败');
             return;
           }
+          transientFailures = 0;
           if (d.status === 'completed') {
             if (d.account_id) {
               await this.apiFetch(`/accounts/${d.account_id}/activate`, { method: 'POST' });
             }
+            await this.refreshAccountData();
             this.showToast(`登录成功${d.email ? ': ' + d.email : ''}`);
-            this.loadAccounts();
-            this.loadRotation();
             return;
           }
           if (d.status === 'failed') {
             this.showToast(this.loginErrorMessage(d.error));
             return;
           }
+          delay = Math.min(1500, delay + 250);
         } catch (e) {
-          this.showToast('查询登录状态失败');
-          return;
+          transientFailures += 1;
+          if (transientFailures >= 6) { this.showToast('查询登录状态失败'); return; }
+          delay = Math.min(2000, delay + 250);
         }
       }
       this.showToast('登录仍未完成，请稍后刷新账号列表');

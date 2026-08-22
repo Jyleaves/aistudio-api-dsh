@@ -89,8 +89,11 @@ class AccountService:
             await browser_session.switch_auth(str(auth_path))
             await browser_session.ensure_context()
 
-            # 切号后默认清理 snapshot，避免旧页面态和新账号 cookies 混用。
-            if not keep_snapshot_cache and snapshot_cache is not None:
+            # snapshot 按账号命名空间隔离。切号时不再清空其他账号的缓存，
+            # 这样大 PDF 在账号轮换后可以复用该账号自己的已捕获请求。
+            if snapshot_cache is not None and hasattr(snapshot_cache, "set_namespace"):
+                snapshot_cache.set_namespace(account_id)
+            elif not keep_snapshot_cache and snapshot_cache is not None:
                 snapshot_cache.clear()
                 logger.info("已清除 snapshot 缓存")
 

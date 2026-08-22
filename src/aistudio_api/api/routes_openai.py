@@ -12,6 +12,7 @@ from aistudio_api.api.response_models import (
     OpenAIChatCompletionResponse,
 )
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.infrastructure.gateway.model_catalog import FALLBACK_GEMINI_MODELS, filter_gemini_models
 
 from .dependencies import get_client
 from .schemas import ChatRequest, ImageRequest
@@ -68,16 +69,28 @@ MODELS = [ModelCardResponse(**model) for model in MODELS]
 MODEL_IDS = {m.id for m in MODELS}
 
 
+def _model_cards(model_ids: list[str] | tuple[str, ...]) -> list[ModelCardResponse]:
+    ids = filter_gemini_models(model_ids)
+    return [ModelCardResponse(id=model_id, object="model", created=1700000000, owned_by="google") for model_id in ids]
+
+
+async def _available_model_ids(client: AIStudioClient, force: bool = False) -> list[str]:
+    try:
+        discovered = await client.discover_models(force=force)
+    except Exception:
+        discovered = []
+    return filter_gemini_models(discovered) or list(FALLBACK_GEMINI_MODELS)
+
+
 @router.get("/v1/models", response_model=ModelListResponse)
-async def list_models():
-    return ModelListResponse(data=MODELS)
+async def list_models(refresh: bool = False, client: AIStudioClient = Depends(get_client)):
+    return ModelListResponse(data=_model_cards(await _available_model_ids(client, force=refresh)))
 
 
 @router.get("/v1/models/{model_id:path}", response_model=ModelCardResponse)
-async def get_model(model_id: str):
-    for m in MODELS:
-        if m.id == model_id:
-            return m
+async def get_model(model_id: str, client: AIStudioClient = Depends(get_client)):
+    if model_id.lower().startswith("gemini-") and model_id in await _available_model_ids(client):
+        return _model_cards([model_id])[0]
     raise HTTPException(status_code=404, detail={"message": f"Model '{model_id}' not found", "type": "invalid_request_error"})
 
 

@@ -18,6 +18,22 @@ from aistudio_api.infrastructure.account.login_service import (
 )
 
 
+def test_api_key_store_generates_and_supports_rotation(tmp_path, monkeypatch):
+    from aistudio_api.infrastructure.auth.api_key_store import ApiKeyStore
+
+    monkeypatch.setattr(login_module.settings, "api_keys", frozenset())
+    monkeypatch.setattr(ApiKeyStore, "_persist_initial_env", lambda self, secret: None)
+    store = ApiKeyStore(tmp_path / "api_keys.json")
+    generated = store.ensure()
+    assert generated and generated.startswith("sk-aistudio-")
+    assert store.verify(generated)
+    created, second = store.create("test key")
+    assert created["name"] == "test key"
+    assert store.verify(second)
+    store.revoke(created["id"])
+    assert not store.verify(second)
+
+
 def test_normalize_email_extracts_address_from_google_page_text():
     assert _normalize_email("Signed in as Jiayex2277@gmail.com") == "jiayex2277@gmail.com"
     assert _normalize_email("no email here") is None

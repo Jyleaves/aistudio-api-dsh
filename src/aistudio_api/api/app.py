@@ -6,7 +6,7 @@ import argparse
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,10 +30,15 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     from aistudio_api.config import settings
+    from aistudio_api.infrastructure.auth.api_key_store import get_api_key_store
     from aistudio_api.infrastructure.account.account_store import AccountStore
     from aistudio_api.infrastructure.account.login_service import LoginService
     from aistudio_api.application.account_service import AccountService
     from aistudio_api.application.account_rotator import init_rotator, RotationMode
+
+    generated_key = get_api_key_store().ensure()
+    if generated_key:
+        logger.warning("首次安装已生成 API Key，并写入项目 .env 文件。")
 
     client = AIStudioClient(
         port=runtime_state.browser_port,
@@ -115,10 +120,39 @@ async def login_page():
 
 
 @app.get("/auth/check")
-async def auth_check():
+async def auth_check(request: Request, response: Response):
     """检查认证状态，用于前端判断是否需要登录。"""
     from aistudio_api.config import settings
-    return {"auth_enabled": settings.auth_enabled}
+    from aistudio_api.infrastructure.auth.api_key_store import (
+        create_local_session,
+        is_local_session_valid,
+    )
+
+    local_session = False
+    local_host = request.client and request.client.host in {"127.0.0.1", "::1", "localhost"}
+    if settings.auth_enabled and settings.local_ui_auto_login and local_host:
+        session_token = request.cookies.get("asp_session")
+        if not is_local_session_valid(session_token):
+            session_token = create_local_session()
+            response.set_cookie(
+                "asp_session",
+                session_token,
+                max_age=86400,
+                httponly=True,
+                samesite="lax",
+                secure=False,
+            )
+        local_session = True
+    return {"auth_enabled": settings.auth_enabled, "local_session": local_session}
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    from aistudio_api.infrastructure.auth.api_key_store import revoke_local_session
+
+    revoke_local_session(request.cookies.get("asp_session"))
+    response.delete_cookie("asp_session")
+    return {"ok": True}
 
 
 def main():
