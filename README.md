@@ -38,13 +38,13 @@ API Key 管理支持同时保留多个有效 Key。创建新 Key 不会使旧 Ke
 
 ## 2. 安装 dsh 插件
 
-将 `dsh-gemini-aistudio` 项目放在本机目录后，在 dsh web profile 中安装：
+在 dsh web profile 中直接从 GitHub 安装：
 
 ```powershell
-dsh plugin --profile web add E:\Project\dsh-gemini-aistudio
+dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
 ```
 
-如果插件目录不同，把命令中的路径替换为实际路径。设置 dsh 进程可见的反代 API Key：
+如果使用本地开发副本，也可以把命令中的 GitHub 地址替换为本地插件目录。设置 dsh 进程可见的反代 API Key：
 
 ```powershell
 $env:AISTUDIO_API_KEY = "与反代 .env 中某个有效 Key 相同"

@@ -11,10 +11,10 @@ python -m venv .venv
 
 复制 `.env.example` 为 `.env`，启动反代后访问 `http://127.0.0.1:8090`。首次安装可让 `AISTUDIO_API_KEY` 留空，由服务自动生成。首次登录 Google 账号时将 `AISTUDIO_BROWSER_HEADLESS=0`，登录完成后改回 `1`。
 
-dsh 插件安装路径示例：
+dsh 插件安装：
 
 ```powershell
-dsh plugin --profile web add E:\Project\dsh-gemini-aistudio
+dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
 $env:AISTUDIO_API_KEY = "与反代中某个有效 Key 相同"
 ```
 
