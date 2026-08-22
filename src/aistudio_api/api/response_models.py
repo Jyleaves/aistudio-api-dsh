@@ -209,10 +209,18 @@ class ModelCardResponse(BaseModel):
     object: Literal["model"] = "model"
     created: int
     owned_by: str
+    # Keep both the existing camelCase metadata used by the native plugin and
+    # the OpenAI-compatible snake_case aliases consumed by dsh discovery.
+    name: str | None = None
+    display_name: str | None = None
     contextWindow: int | None = None
     maxTokens: int | None = None
     reasoning: bool | None = None
     inputModalities: list[str] | None = None
+    context_window: int | None = None
+    context_length: int | None = None
+    max_output_tokens: int | None = None
+    max_tokens: int | None = None
 
 
 class ModelListResponse(BaseModel):
