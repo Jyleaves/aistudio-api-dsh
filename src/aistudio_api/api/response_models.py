@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+def _sync_reasoning_fields(model: BaseModel) -> BaseModel:
+    # Mirror the thought summary into the DeepSeek-style reasoning_content
+    # field consumed by most OpenAI-compatible clients, keeping the legacy
+    # thinking field intact for existing consumers.
+    if getattr(model, "reasoning_content", None) is None and model.thinking is not None:
+        model.reasoning_content = model.thinking
+    return model
 
 
 class OpenAICompletionTokenDetails(BaseModel):
@@ -34,7 +43,12 @@ class OpenAIChatMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
     thinking: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[OpenAIToolCall] | None = None
+
+    @model_validator(mode="after")
+    def _mirror_reasoning(self):
+        return _sync_reasoning_fields(self)
 
 
 class OpenAIChatChoice(BaseModel):
@@ -56,7 +70,12 @@ class OpenAIChatDelta(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
     thinking: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[OpenAIToolCall] | None = None
+
+    @model_validator(mode="after")
+    def _mirror_reasoning(self):
+        return _sync_reasoning_fields(self)
 
 
 class OpenAIChatChunkChoice(BaseModel):
