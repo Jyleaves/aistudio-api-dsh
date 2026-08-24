@@ -27,8 +27,24 @@ def _decode_wire_value(value):
     if not isinstance(value, list):
         return value
 
-    # Scalar and array values use [null, null, value]. Arrays wrap each item
-    # with the same value encoding, including nested objects.
+    # AI Studio also emits sparse protobuf Value wrappers: struct at index 4
+    # and list at index 5. Decode these before the scalar string slot at index
+    # 2, otherwise arrays of objects collapse into arrays of null values.
+    if len(value) > 5 and all(item is None for item in value[:5]) and isinstance(value[5], list):
+        items = value[5]
+        if (
+            len(items) == 1
+            and isinstance(items[0], list)
+            and (not items[0] or items[0][0] is not None)
+        ):
+            items = items[0]
+        return [_decode_wire_value(item) for item in items]
+
+    if len(value) > 4 and all(item is None for item in value[:4]) and isinstance(value[4], list):
+        return _decode_wire_args(value[4])
+
+    # Scalar and compact array values use [null, null, value]. Arrays wrap
+    # each item with the same value encoding, including nested objects.
     if len(value) >= 3 and value[0] is None and value[1] is None:
         if isinstance(value[2], list):
             return [_decode_wire_value(item) for item in value[2]]

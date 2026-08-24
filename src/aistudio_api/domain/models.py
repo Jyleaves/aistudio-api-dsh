@@ -240,9 +240,19 @@ def _decode_wire_value(value: Any) -> Any:
             items = value[5]
             # The streaming response may add one extra list container around
             # the array payload (observed as [["q1", "q2"]]).
-            if len(items) == 1 and isinstance(items[0], list):
+            if (
+                len(items) == 1
+                and isinstance(items[0], list)
+                and (not items[0] or items[0][0] is not None)
+            ):
                 items = items[0]
             return [_decode_wire_value(item) for item in items]
+        # Struct values use wire index 4. This matters for arrays of objects:
+        # each item is a sparse Value wrapper whose string slot (index 2) is
+        # null, while its argument-pair object lives later in the wrapper.
+        # Checking the scalar slot first turned every todo object into null.
+        if len(value) > 4 and all(item is None for item in value[:4]) and isinstance(value[4], list):
+            return _decode_wire_argument_pairs(value[4])
         if len(value) >= 3 and value[0] is None and value[1] is None:
             if isinstance(value[2], list):
                 return [_decode_wire_value(item) for item in value[2]]

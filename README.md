@@ -24,7 +24,11 @@ PDF 当前通过 Gemini `inlineData` 传输。为保证长期运行稳定性，8
 dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
 ```
 
-在 dsh 的自定义提供方中填写：
+插件会注册 `Google AI Studio (native)` 提供方。优先直接选择这个提供方；
+它会明确声明图片输入和 `Minimal`、`Low`、`Medium`、`High` 思考强度，默认
+为 `High`，无需再手工新建同名提供方。
+
+仅在需要兼容旧配置时，才在 dsh 的自定义提供方中填写：
 
 | 字段 | 值 |
 |---|---|
@@ -33,7 +37,9 @@ dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
 | API 地址 | 应用“接入指南”中的 OpenAI Base URL |
 | API 密钥 | 在 Asteria 中创建的 API Key |
 
-随后点击“获取可用模型”。
+随后点击“获取可用模型”。当前 dsh 的通用 OpenAI 模型发现可能只读取模型
+名称和上下文限制，不一定导入图片与思考强度元数据，因此推荐使用插件注册的
+原生提供方。
 
 ## 更新
 

@@ -114,3 +114,99 @@ def test_parse_response_chunk_decodes_aistudio_array_argument_variant():
     candidate = parse_response_chunk(chunk)
 
     assert candidate.function_calls[0]["args"] == {"queries": ["alpha", "beta"]}
+
+
+def test_parse_response_chunk_decodes_array_of_object_arguments():
+    def scalar(value):
+        return [None, None, value]
+
+    def struct(**values):
+        return [
+            None,
+            None,
+            None,
+            None,
+            [[[key, scalar(value)] for key, value in values.items()]],
+        ]
+
+    todos = [
+        struct(content="Inspect image input", status="in_progress"),
+        struct(content="Repair credential loading", status="pending"),
+        struct(content="Run regression tests", status="pending"),
+        struct(content="Verify dsh end to end", status="pending"),
+    ]
+    raw_part = [None] * 10 + [[
+        "todo_write",
+        [[["todos", [None, None, None, None, None, todos]]]],
+        "call_todos",
+    ]]
+    chunk = [
+        [[[[raw_part], "model"]]],
+        None, None, None, None, None, None, None,
+    ]
+
+    candidate = parse_response_chunk(chunk)
+
+    assert candidate.function_calls[0]["args"] == {
+        "todos": [
+            {"content": "Inspect image input", "status": "in_progress"},
+            {"content": "Repair credential loading", "status": "pending"},
+            {"content": "Run regression tests", "status": "pending"},
+            {"content": "Verify dsh end to end", "status": "pending"},
+        ]
+    }
+
+
+def test_parse_response_chunk_recursively_decodes_nested_objects_for_any_tool():
+    def scalar(value):
+        return [None, None, value]
+
+    def array(*values):
+        return [None, None, None, None, None, list(values)]
+
+    def struct(values):
+        return [
+            None,
+            None,
+            None,
+            None,
+            [[[key, value] for key, value in values.items()]],
+        ]
+
+    operations = array(
+        struct({
+            "file_path": scalar("src/a.py"),
+            "changes": array(
+                struct({"old": scalar("alpha"), "new": scalar("beta")}),
+                struct({"old": scalar("one"), "new": scalar("two")}),
+            ),
+        }),
+        struct({
+            "file_path": scalar("src/b.py"),
+            "changes": array(struct({"old": scalar("x"), "new": scalar("y")})),
+        }),
+    )
+    raw_part = [None] * 10 + [[
+        "batch_edit",
+        [[["operations", operations]]],
+        "call_batch",
+    ]]
+    chunk = [[[[[raw_part], "model"]]], None, None, None, None, None, None, None]
+
+    candidate = parse_response_chunk(chunk)
+
+    assert candidate.function_calls[0]["args"] == {
+        "operations": [
+            {
+                "file_path": "src/a.py",
+                "changes": [
+                    {"old": "alpha", "new": "beta"},
+                    {"old": "one", "new": "two"},
+                ],
+            },
+            {
+                "file_path": "src/b.py",
+                "changes": [{"old": "x", "new": "y"}],
+            },
+        ]
+    }

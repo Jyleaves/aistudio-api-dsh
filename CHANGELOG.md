@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-08-25
+
+### Fixed
+
+- Decode AI Studio's sparse protobuf values recursively for every function
+  tool, including arrays of nested objects. This prevents valid dsh arguments
+  such as `todo_write.todos` from becoming arrays of `null` values.
+
 ## [1.0.3] - 2026-08-24
 
 ### Added
@@ -139,7 +147,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.0...v1.0.1
