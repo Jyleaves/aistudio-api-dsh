@@ -5,14 +5,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Asteria</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260824-1">
+  <link rel="stylesheet" href="/static/style.css?v=20260824-2">
 </head>
 
 <body x-data="app()" x-init="init()" @click="configOpen=false">
   <div class="overlay" :class="{open:sidebarOpen}" @click="sidebarOpen=false"></div>
   <nav class="sidebar" :class="{open:sidebarOpen}">
     <div class="sidebar-header">
-      <div class="logo">A</div><span>Asteria</span>
+      <div class="logo">A</div>
+      <div class="brand-lockup">
+        <span class="brand-name">Asteria</span>
+        <span class="brand-version" x-text="`v${appVersion}`">v1.0.3</span>
+      </div>
     </div>
     <div class="nav-section">
       <button class="nav-item" :class="{active:view==='accounts'}" @click="go('accounts')">
@@ -583,7 +587,7 @@
             <div class="page-actions">
               <button class="btn" @click="checkUpdate()" :disabled="updateInfo.checking"
                 x-text="updateInfo.checking?'检查中...':'检查更新'"></button>
-              <button class="btn btn-primary" @click="startUpdate()" :disabled="updateInfo.updating||updateInfo.error"
+              <button class="btn btn-primary" @click="startUpdate()" :disabled="updateInfo.updating || !!updateInfo.error"
                 x-show="updateInfo.available" x-text="updateInfo.updating?'更新中...':'立即更新'"></button>
             </div>
           </div>
@@ -695,7 +699,7 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <script src="/static/app.js?v=20260824-1"></script>
+  <script src="/static/app.js?v=20260824-2"></script>
   <script defer src="/static/alpine.min.js"></script>
 </body>
 

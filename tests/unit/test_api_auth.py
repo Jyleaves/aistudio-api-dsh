@@ -1,8 +1,12 @@
-from fastapi import Depends, FastAPI
+import asyncio
+
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
+from aistudio_api.api.app import auth_check
 from aistudio_api.api.dependencies import require_api_key
 from aistudio_api.config import settings
+from aistudio_api.version import APP_VERSION
 
 
 def _build_client() -> TestClient:
@@ -88,3 +92,12 @@ def test_missing_or_invalid_api_key_returns_401(monkeypatch, tmp_path):
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
     assert response.json()["detail"]["type"] == "authentication_error"
+
+
+def test_auth_check_reports_the_runtime_app_version(monkeypatch):
+    monkeypatch.setattr(settings, "local_ui_auto_login", False)
+    request = Request({"type": "http", "client": ("192.0.2.1", 12345)})
+
+    result = asyncio.run(auth_check(request, Response()))
+
+    assert result["version"] == APP_VERSION

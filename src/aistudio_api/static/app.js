@@ -7,6 +7,7 @@ function app() {
     accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
+    appVersion: '1.0.3',
     updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.3', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
     settings: {}, settingsSaving: false,
     models: [], model: '',
@@ -72,6 +73,8 @@ function app() {
         const res = await fetch('/auth/check');
         const data = await res.json();
         this.authEnabled = data.auth_enabled;
+        this.appVersion = data.version || this.appVersion;
+        this.updateInfo.current = this.appVersion;
 
         if (this.authEnabled) {
           const token = localStorage.getItem('asp_api_token');

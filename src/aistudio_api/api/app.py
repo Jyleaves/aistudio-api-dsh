@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.version import APP_VERSION
 
 from .routes_anthropic import router as anthropic_router
 from .dependencies import require_api_key
@@ -230,7 +231,11 @@ async def auth_check(request: Request, response: Response):
                 secure=False,
             )
         local_session = True
-    return {"auth_enabled": settings.auth_enabled, "local_session": local_session}
+    return {
+        "auth_enabled": settings.auth_enabled,
+        "local_session": local_session,
+        "version": APP_VERSION,
+    }
 
 
 @app.post("/auth/logout")

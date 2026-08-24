@@ -29,6 +29,23 @@ def test_primary_pages_use_shared_visual_components():
     assert "confirmDialog.hint" in html
 
 
+def test_update_action_uses_a_strict_boolean_disabled_state():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    assert ':disabled="updateInfo.updating || !!updateInfo.error"' in html
+    assert ':disabled="updateInfo.updating||updateInfo.error"' not in html
+
+
+def test_sidebar_version_badge_uses_the_server_version():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'class="brand-version"' in html
+    assert 'x-text="`v${appVersion}`"' in html
+    assert "this.appVersion = data.version || this.appVersion" in script
+    assert "this.updateInfo.current = this.appVersion" in script
+
+
 def test_integration_guide_covers_all_supported_protocols_and_current_origin():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

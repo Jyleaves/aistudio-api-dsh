@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Advertise supported reasoning efforts and the default effort in OpenAI model
   metadata for model-aware clients such as dsh.
+- Show a compact version badge beside the Asteria name, sourced from the
+  running backend version.
 
 ### Changed
 
@@ -26,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep the update action clickable after a successful update check when no
+  error is present. The previous empty-string state could still emit an HTML
+  `disabled` attribute.
 - Accept `minimal`, `low`, `medium`, and `high` OpenAI reasoning efforts and
   preserve the selected level through request sanitization and tool calls.
 - Create the configured temporary directory before decoding Gemini inline
