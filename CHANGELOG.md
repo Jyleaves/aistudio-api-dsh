@@ -39,12 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when an older installation left them behind.
 - Refresh desktop static-asset cache keys so upgraded clients immediately load
   the v1.0.2 performance and interface changes.
-- Keep only Chinese and English Chromium locale packs in the full installer,
-  and omit browser installer, updater, WebDriver, notification, proxy, and PWA
-  helper executables that the headless Playwright runtime never launches.
-- Validate the cached Chromium build against Playwright's declared browser
-  revision during Windows packaging, preventing stale local browser caches
-  from producing incompatible release installers.
+- Pin the full installer to the original CloakBrowser 146.0.7680.177 runtime,
+  verify its executable with SHA-256, record the source archive checksum, and
+  never substitute Playwright-downloaded Chromium.
+- Preserve every file from the pinned CloakBrowser archive; incremental
+  updates continue to leave the user's installed browser untouched.
+- Build the full installer locally from that non-public browser archive; the
+  GitHub workflow builds only the cumulative updater and never downloads a
+  replacement browser.
 
 ### Fixed
 

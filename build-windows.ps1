@@ -1,7 +1,8 @@
 # Build the Windows desktop app and its selectable-location installer.
 [CmdletBinding()]
 param(
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$UpdateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,88 +50,39 @@ try {
     & $python -m PyInstaller --noconfirm --clean aistudio-api.spec
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
-    # Ship only the full Playwright Chromium browser. Keep the build source
-    # copy in the project directory so builds do not depend on a user cache.
+    if (-not $UpdateOnly) {
+        # Ship the pinned CloakBrowser runtime exactly as supplied. Google login
+        # compatibility depends on this browser build, so never substitute a
+        # Playwright-downloaded Chromium or prune files from the runtime.
     $projectBrowserRoot = Join-Path $root "cloakbrowser-chromium"
     $bundledBrowserRoot = Join-Path $root "dist\Asteria\cloakbrowser-chromium"
     $projectBrowserFullPath = [IO.Path]::GetFullPath($projectBrowserRoot)
     $projectRootFullPath = [IO.Path]::GetFullPath($root)
     if (-not $projectBrowserFullPath.StartsWith($projectRootFullPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to refresh browser cache outside project: $projectBrowserFullPath"
+        throw "Refusing to read browser runtime outside project: $projectBrowserFullPath"
     }
-    $playwrightManifestPath = Join-Path $root ".venv\Lib\site-packages\playwright\driver\package\browsers.json"
-    if (-not (Test-Path -LiteralPath $playwrightManifestPath)) {
-        throw "Playwright browser manifest not found: $playwrightManifestPath"
+    $browserLockPath = Join-Path $root "browser-runtime.json"
+    if (-not (Test-Path -LiteralPath $browserLockPath)) {
+        throw "Pinned CloakBrowser metadata not found: $browserLockPath"
     }
-    $playwrightManifest = Get-Content -LiteralPath $playwrightManifestPath -Raw | ConvertFrom-Json
-    $expectedChromium = $playwrightManifest.browsers | Where-Object { $_.name -eq "chromium" } | Select-Object -First 1
-    if (-not $expectedChromium.browserVersion -or -not $expectedChromium.revision) {
-        throw "Unable to read the required Chromium version from Playwright"
+    $browserLock = Get-Content -LiteralPath $browserLockPath -Raw | ConvertFrom-Json
+    if (-not $browserLock.chrome_version -or -not $browserLock.chrome_sha256) {
+        throw "Pinned CloakBrowser metadata is incomplete: $browserLockPath"
     }
-    $browserRoot = Join-Path $env:LOCALAPPDATA "ms-playwright"
-    $installedChromium = Join-Path $browserRoot "chromium-$($expectedChromium.revision)"
-    $installedChrome = Get-ChildItem $installedChromium -Recurse -Filter "chrome.exe" -File -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    $projectChrome = Get-ChildItem $projectBrowserRoot -Recurse -Filter "chrome.exe" -File -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-
-    if ($installedChrome) {
-        $browserSourceRoot = $installedChromium
-    } elseif ($projectChrome -and $projectChrome.VersionInfo.ProductVersion -eq $expectedChromium.browserVersion) {
-        $browserSourceRoot = $projectBrowserRoot
-    } else {
-        $actualVersion = if ($projectChrome) { $projectChrome.VersionInfo.ProductVersion } else { "missing" }
-        throw "Bundled Chromium $actualVersion does not match Playwright $($expectedChromium.browserVersion). Run: $python -m playwright install chromium"
+    $projectChromePath = Join-Path $projectBrowserRoot "chrome.exe"
+    if (-not (Test-Path -LiteralPath $projectChromePath -PathType Leaf)) {
+        throw "Pinned CloakBrowser chrome.exe not found: $projectChromePath"
     }
-    if (-not ([IO.Path]::GetFullPath($browserSourceRoot)).Equals([IO.Path]::GetFullPath($projectBrowserRoot), [StringComparison]::OrdinalIgnoreCase)) {
-        if (Test-Path -LiteralPath $projectBrowserFullPath) { Remove-Item -LiteralPath $projectBrowserFullPath -Recurse -Force }
-        New-Item -ItemType Directory -Path $projectBrowserRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $browserSourceRoot -Force |
-            Copy-Item -Destination $projectBrowserRoot -Recurse -Force
+    $projectChrome = Get-Item -LiteralPath $projectChromePath
+    $actualBrowserVersion = $projectChrome.VersionInfo.ProductVersion
+    $actualBrowserHash = (Get-FileHash -LiteralPath $projectChromePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualBrowserVersion -ne $browserLock.chrome_version -or $actualBrowserHash -ne $browserLock.chrome_sha256) {
+        throw "CloakBrowser runtime does not match browser-runtime.json (version=$actualBrowserVersion sha256=$actualBrowserHash)"
     }
     if (Test-Path $bundledBrowserRoot) { Remove-Item -LiteralPath $bundledBrowserRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $bundledBrowserRoot -Force | Out-Null
     Get-ChildItem -LiteralPath $projectBrowserRoot -Force |
         Copy-Item -Destination $bundledBrowserRoot -Recurse -Force
-
-    # The bundled browser is a headless API runtime, not a general-purpose
-    # Chrome installation. Keep Chinese plus Chromium's English fallback and
-    # remove installer/updater helpers that Playwright never launches. Prune
-    # only the disposable dist copy; the project browser cache remains intact.
-    $browserDistRoot = [IO.Path]::GetFullPath($bundledBrowserRoot)
-    if (-not $browserDistRoot.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to prune browser files outside dist: $browserDistRoot"
-    }
-    $browserDistChrome = Get-ChildItem -LiteralPath $browserDistRoot -Recurse -Filter "chrome.exe" -File -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if (-not $browserDistChrome) {
-        throw "Copied Chromium runtime does not contain chrome.exe: $browserDistRoot"
-    }
-    $browserRuntimeRoot = [IO.Path]::GetFullPath($browserDistChrome.DirectoryName)
-    $runtimeIsBundleRoot = $browserRuntimeRoot.Equals($browserDistRoot, [StringComparison]::OrdinalIgnoreCase)
-    $runtimeIsInsideBundle = $browserRuntimeRoot.StartsWith($browserDistRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
-    if (-not $runtimeIsBundleRoot -and -not $runtimeIsInsideBundle) {
-        throw "Refusing to prune browser runtime outside bundle: $browserRuntimeRoot"
-    }
-    $localeRoot = Join-Path $browserRuntimeRoot "locales"
-    if (Test-Path -LiteralPath $localeRoot) {
-        $keptLocales = @("en-US.pak", "zh-CN.pak")
-        Get-ChildItem -LiteralPath $localeRoot -File |
-            Where-Object { $_.Name -notin $keptLocales } |
-            Remove-Item -Force
-    }
-    foreach ($unusedBrowserHelper in @(
-        "chromedriver.exe",
-        "setup.exe",
-        "elevation_service.exe",
-        "notification_helper.exe",
-        "chrome_pwa_launcher.exe",
-        "chrome_proxy.exe"
-    )) {
-        $unusedBrowserHelperPath = Join-Path $browserRuntimeRoot $unusedBrowserHelper
-        if (Test-Path -LiteralPath $unusedBrowserHelperPath) {
-            Remove-Item -LiteralPath $unusedBrowserHelperPath -Force
-        }
     }
 
     # Build a second staging directory for existing users. It contains the
@@ -147,15 +99,17 @@ try {
         throw "Inno Setup compiler not found. Install Inno Setup 7 or use -SkipInstaller."
     }
     Write-Host "Using Inno Setup: $iscc"
-        & $iscc "/DMyAppVersion=$projectVersion" (Join-Path $root "installer.iss")
-        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+        $packages = @()
+        if (-not $UpdateOnly) {
+            & $iscc "/DMyAppVersion=$projectVersion" (Join-Path $root "installer.iss")
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+            $packages += Join-Path $root "dist\Asteria-setup-$projectVersion.exe"
+        }
         & $iscc "/DMyAppVersion=$projectVersion" (Join-Path $root "installer-update.iss")
         if ($LASTEXITCODE -ne 0) { throw "Incremental Inno Setup failed with exit code $LASTEXITCODE" }
+        $packages += Join-Path $root "dist\Asteria-update-$projectVersion.exe"
 
-        foreach ($package in @(
-            (Join-Path $root "dist\Asteria-setup-$projectVersion.exe"),
-            (Join-Path $root "dist\Asteria-update-$projectVersion.exe")
-        )) {
+        foreach ($package in $packages) {
             if (-not (Test-Path $package)) { throw "Expected installer was not created: $package" }
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
             Set-Content -LiteralPath "$package.sha256" -Value "$hash *$([IO.Path]::GetFileName($package))" -Encoding ascii

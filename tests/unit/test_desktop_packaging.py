@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def test_release_packaging_uses_brand_and_icon():
     assert '#define MyAppName "Asteria"' in installer
     assert '#define MyAppExeName "Asteria.exe"' in installer
     assert 'Source: "dist\\Asteria\\*"' in installer
-    assert "Asteria-setup-*.exe" in workflow
+    assert "Asteria-update-*.exe" in workflow
     assert "version=windows_version_info" in spec
     assert "StringStruct('ProductVersion', project_version)" in spec
 
@@ -87,19 +88,23 @@ def test_release_bundle_excludes_non_runtime_playwright_assets():
     assert 'Name: "{app}\\_internal\\playwright\\driver\\package\\lib\\vite"' in updater
 
 
-def test_windows_build_prunes_non_runtime_browser_payload():
+def test_windows_build_requires_pinned_cloakbrowser_runtime():
     build_script = (ROOT / "build-windows.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    browser_lock = json.loads((ROOT / "browser-runtime.json").read_text(encoding="utf-8"))
 
-    assert '$keptLocales = @("en-US.pak", "zh-CN.pak")' in build_script
-    assert '"chromedriver.exe"' in build_script
-    assert '"setup.exe"' in build_script
-    assert "Refusing to prune browser files outside dist" in build_script
-    assert "Copied Chromium runtime does not contain chrome.exe" in build_script
-    assert "Refusing to prune browser runtime outside bundle" in build_script
-    assert "browsers.json" in build_script
-    assert "does not match Playwright" in build_script
-    assert 'chromium-$($expectedChromium.revision)' in build_script
-    assert "Refusing to refresh browser cache outside project" in build_script
+    assert 'Join-Path $projectBrowserRoot "chrome.exe"' in build_script
+    assert "browser-runtime.json" in build_script
+    assert "Get-FileHash -LiteralPath $projectChromePath -Algorithm SHA256" in build_script
+    assert "Playwright-downloaded Chromium" in build_script
+    assert "playwright install chromium" not in build_script.lower()
+    assert "playwright install chromium" not in workflow.lower()
+    assert ".\\build-windows.ps1 -UpdateOnly" in workflow
+    assert "dist/Asteria-setup-*.exe" not in workflow
+    assert browser_lock["source_archive"] not in workflow
+    assert 'if (-not $UpdateOnly) {' in build_script
+    assert browser_lock["chrome_version"] == "146.0.7680.177"
+    assert browser_lock["chrome_sha256"] == "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80"
 
 
 def test_server_startup_warms_only_active_account_without_blocking_ui():
