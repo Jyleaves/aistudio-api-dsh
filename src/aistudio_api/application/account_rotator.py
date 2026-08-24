@@ -33,8 +33,10 @@ class AccountStats:
     errors: int = 0
     last_used: float = 0.0           # timestamp
     last_rate_limited: float = 0.0   # timestamp
+    last_error: float = 0.0          # timestamp
     cooldown_until: float = 0.0      # timestamp, 429 后冷却期
     consecutive_rate_limits: int = 0
+    consecutive_errors: int = 0
 
     def is_available(self) -> bool:
         """检查账号是否可用（不在冷却期）。"""
@@ -45,6 +47,7 @@ class AccountStats:
         self.success += 1
         self.last_used = time.time()
         self.consecutive_rate_limits = 0
+        self.consecutive_errors = 0
 
     def record_rate_limited(self, cooldown_seconds: int = 60) -> int:
         self.requests += 1
@@ -64,7 +67,8 @@ class AccountStats:
     def record_error(self) -> None:
         self.requests += 1
         self.errors += 1
-        self.last_used = time.time()
+        self.last_error = self.last_used = time.time()
+        self.consecutive_errors += 1
 
 
 class AccountRotator:
@@ -146,6 +150,11 @@ class AccountRotator:
             stats.last_used,
             stats.requests,
         )
+
+    def should_avoid_warm_reuse(self, account_id: str) -> bool:
+        """Avoid immediately reusing a warm worker after its request failed."""
+        stats = self._stats.get(account_id)
+        return bool(stats and stats.consecutive_errors > 0)
 
     def _get_available_accounts(self) -> list[tuple[AccountMeta, AccountStats]]:
         """获取所有可用的账号（不在冷却期）。"""

@@ -57,6 +57,8 @@ def test_release_packaging_uses_brand_and_icon():
     assert '#define MyAppExeName "Asteria.exe"' in installer
     assert 'Source: "dist\\Asteria\\*"' in installer
     assert "Asteria-setup-*.exe" in workflow
+    assert "version=windows_version_info" in spec
+    assert "StringStruct('ProductVersion', project_version)" in spec
 
 
 def test_release_artifact_name_and_version_are_consistent():
@@ -64,13 +66,40 @@ def test_release_artifact_name_and_version_are_consistent():
     updater = (ROOT / "installer-update.iss").read_text(encoding="utf-8")
     package = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert '#define MyAppVersion "1.0.1"' in installer
-    assert '#define MyAppVersion "1.0.1"' in updater
-    assert 'version = "1.0.1"' in package
+    assert '#define MyAppVersion "1.0.2"' in installer
+    assert '#define MyAppVersion "1.0.2"' in updater
+    assert 'version = "1.0.2"' in package
     assert "OutputBaseFilename=Asteria-setup-{#MyAppVersion}" in installer
     assert "OutputBaseFilename=Asteria-update-{#MyAppVersion}" in updater
     assert "skipifsilent" not in next(line for line in updater.splitlines() if line.startswith("Filename:"))
     assert "runasoriginaluser" in next(line for line in updater.splitlines() if line.startswith("Filename:"))
+
+
+def test_release_bundle_excludes_non_runtime_playwright_assets():
+    spec = (ROOT / "aistudio-api.spec").read_text(encoding="utf-8")
+    updater = (ROOT / "installer-update.iss").read_text(encoding="utf-8")
+
+    assert "'playwright/driver/package/types/'" in spec
+    assert "'playwright/driver/package/lib/vite/'" in spec
+    assert "package/lib/server" in spec
+    assert "a.datas = [item for item in a.datas if _keep_collected_runtime_data(item)]" in spec
+    assert 'Name: "{app}\\_internal\\playwright\\driver\\package\\types"' in updater
+    assert 'Name: "{app}\\_internal\\playwright\\driver\\package\\lib\\vite"' in updater
+
+
+def test_windows_build_prunes_non_runtime_browser_payload():
+    build_script = (ROOT / "build-windows.ps1").read_text(encoding="utf-8")
+
+    assert '$keptLocales = @("en-US.pak", "zh-CN.pak")' in build_script
+    assert '"chromedriver.exe"' in build_script
+    assert '"setup.exe"' in build_script
+    assert "Refusing to prune browser files outside dist" in build_script
+    assert "Copied Chromium runtime does not contain chrome.exe" in build_script
+    assert "Refusing to prune browser runtime outside bundle" in build_script
+    assert "browsers.json" in build_script
+    assert "does not match Playwright" in build_script
+    assert 'chromium-$($expectedChromium.revision)' in build_script
+    assert "Refusing to refresh browser cache outside project" in build_script
 
 
 def test_server_startup_warms_only_active_account_without_blocking_ui():

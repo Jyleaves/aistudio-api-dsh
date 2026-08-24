@@ -5,7 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Asteria</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260823-4">
+  <link rel="stylesheet" href="/static/style.css?v=20260824-1">
 </head>
 
 <body x-data="app()" x-init="init()" @click="configOpen=false">
@@ -583,19 +583,24 @@
             <div class="page-actions">
               <button class="btn" @click="checkUpdate()" :disabled="updateInfo.checking"
                 x-text="updateInfo.checking?'检查中...':'检查更新'"></button>
-              <button class="btn btn-primary" @click="startUpdate()" :disabled="updateInfo.updating||updateInfo.dirty"
+              <button class="btn btn-primary" @click="startUpdate()" :disabled="updateInfo.updating||updateInfo.error"
                 x-show="updateInfo.available" x-text="updateInfo.updating?'更新中...':'立即更新'"></button>
             </div>
           </div>
           <div class="card">
             <div class="card-head">更新状态</div>
             <div class="update-content">
+              <div class="update-meta" x-show="updateInfo.checked" x-cloak>
+                <span>当前版本 <b x-text="updateInfo.current || '-'"></b></span>
+                <span x-show="updateInfo.latest">最新版本 <b x-text="updateInfo.latest"></b></span>
+                <span x-show="updateInfo.asset_size">更新包 <b x-text="fmtBytes(updateInfo.asset_size)"></b></span>
+              </div>
               <template x-if="!updateInfo.checked"><span>点击“检查更新”查看 Asteria 是否有新版本。</span></template>
               <template x-if="updateInfo.checked && updateInfo.error"><span x-text="updateInfo.error"></span></template>
               <template x-if="updateInfo.checked && !updateInfo.error && !updateInfo.available"><span>当前已经是最新版本。</span></template>
               <template x-if="updateInfo.checked && !updateInfo.error && updateInfo.available"><span>发现新版本 <b x-text="updateInfo.latest"></b>。更新包不包含浏览器，不会影响账号和设置。</span></template>
-              <template x-if="updateInfo.status === 'downloading'"><div class="update-progress">下载进度：<b x-text="updateInfo.progress + '%'">0%</b><div class="progress-track"><div class="progress-fill" :style="`width:${updateInfo.progress}%`"></div></div></div></template>
-              <template x-if="updateInfo.status === 'ready'"><div class="update-progress success-text">更新已准备好，可以开始安装。</div></template>
+              <template x-if="updateInfo.status === 'downloading'"><div class="update-progress"><div class="update-progress-label"><span x-text="updateInfo.message || (updateInfo.resumed ? '正在断点续传' : '正在下载更新')"></span><b x-text="updateInfo.progress + '%'">0%</b></div><div class="progress-track"><div class="progress-fill" :style="`width:${updateInfo.progress}%`"></div></div><div class="update-bytes" x-show="updateInfo.downloaded_bytes" x-text="fmtBytes(updateInfo.downloaded_bytes) + (updateInfo.asset_size ? ' / ' + fmtBytes(updateInfo.asset_size) : '')"></div></div></template>
+              <template x-if="updateInfo.status === 'ready'"><div class="update-progress success-text" x-text="updateInfo.message || '更新已准备好，可以开始安装。'"></div></template>
             </div>
           </div>
         </div>
@@ -690,7 +695,7 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <script src="/static/app.js?v=20260823-4"></script>
+  <script src="/static/app.js?v=20260824-1"></script>
   <script defer src="/static/alpine.min.js"></script>
 </body>
 

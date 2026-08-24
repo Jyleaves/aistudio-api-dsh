@@ -7,7 +7,7 @@ function app() {
     accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
-    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.1', latest: '', asset_size: 0, error: '' },
+    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.2', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
     settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },
@@ -24,6 +24,7 @@ function app() {
     requestPoolStatus: { ready_accounts: [], standby_accounts: [], initializing_accounts: [], failed_accounts: {} },
     accountWarmupMonitoring: false,
     accountStatusTimer: null,
+    scrollTimer: null,
 
     async init() {
       await this.checkAuth();
@@ -42,18 +43,24 @@ function app() {
       await this.loadRequestPoolStatus();
       this.monitorAccountWarmup();
       this.accountStatusTimer = setInterval(() => {
-        if (this.view !== 'accounts') return;
+        if (document.hidden || this.view !== 'accounts') return;
         Promise.all([
           this.loadAccountMetrics(),
           this.loadRequestPoolStatus(),
         ]).catch(() => {});
-      }, 2000);
+      }, 5000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && this.view === 'accounts') {
+          Promise.all([this.loadAccountMetrics(), this.loadRequestPoolStatus()]).catch(() => {});
+        }
+      });
       window.addEventListener('beforeunload', () => {
         if (this.accountStatusTimer) clearInterval(this.accountStatusTimer);
+        if (this.scrollTimer) clearTimeout(this.scrollTimer);
       }, { once: true });
-      this.$watch('cfg', () => this.saveToCache(), { deep: true });
-      this.$watch('model', () => this.saveToCache());
-      this.$watch('auth.token', () => this.saveToCache());
+      this.$watch('cfg', () => this.savePreferencesToCache(), { deep: true });
+      this.$watch('model', () => this.savePreferencesToCache());
+      this.$watch('auth.token', () => this.savePreferencesToCache());
       document.addEventListener('click', () => this.openSelect = null);
       // A packaged app checks the official release channel silently. This is
       // intentionally independent of the source checkout and Git.
@@ -112,15 +119,43 @@ function app() {
         if (token) this.auth.token = token;
       } catch (e) { console.error('Cache load error', e); }
     },
-    saveToCache() {
+    savePreferencesToCache() {
       try {
-        localStorage.setItem('asp_msgs', JSON.stringify(this.msgs));
         localStorage.setItem('asp_cfg', JSON.stringify(this.cfg));
         localStorage.setItem('asp_model', this.model);
         localStorage.setItem('asp_models', JSON.stringify(this.models));
         if (this.auth.token.trim()) localStorage.setItem('asp_api_token', this.auth.token.trim());
         else localStorage.removeItem('asp_api_token');
       } catch (e) { console.error('Cache save error', e); }
+    },
+    saveMessagesToCache() {
+      try {
+        const cached = [];
+        let usedCharacters = 0;
+        // localStorage is synchronous. Keep enough recent text for a useful
+        // playground history without repeatedly serializing unbounded base64
+        // images or multi-megabyte conversations on the UI thread.
+        for (const source of this.msgs.slice(-100).reverse()) {
+          const item = { ...source };
+          delete item.pending;
+          if (Array.isArray(item.images)) item.images = item.images.filter(value => !String(value).startsWith('data:'));
+          if (typeof item.content === 'string') {
+            item.content = item.content
+              .replace(/!\[([^\]]*)\]\(data:image\/[^)]+\)/g, '[$1图片未写入本地缓存]')
+              .slice(-250000);
+          }
+          if (typeof item.thinking === 'string') item.thinking = item.thinking.slice(-250000);
+          const size = JSON.stringify(item).length;
+          if (cached.length && usedCharacters + size > 1000000) break;
+          cached.push(item);
+          usedCharacters += size;
+        }
+        localStorage.setItem('asp_msgs', JSON.stringify(cached.reverse()));
+      } catch (e) { console.error('Message cache save error', e); }
+    },
+    saveToCache() {
+      this.saveMessagesToCache();
+      this.savePreferencesToCache();
     },
     async clearCache() {
       const ok = await this.askConfirm('清理本地缓存', '将清除当前界面的聊天历史和个性化选项。账号与服务设置不会受影响。', {
@@ -595,7 +630,14 @@ function app() {
     },
 
     resizeTa() { const el = this.$refs.ta; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 200) + 'px' },
-    scrollDown() { setTimeout(() => { const el = document.getElementById('chat-scroll'); if (el) el.scrollTop = el.scrollHeight }, 50) },
+    scrollDown() {
+      if (this.scrollTimer) clearTimeout(this.scrollTimer);
+      this.scrollTimer = setTimeout(() => {
+        const el = document.getElementById('chat-scroll');
+        if (el) el.scrollTop = el.scrollHeight;
+        this.scrollTimer = null;
+      }, 50);
+    },
 
     async handleImageUpload(e) {
       const files = Array.from(e.target.files);
@@ -671,6 +713,19 @@ function app() {
         if (!r.ok) { let e = r.statusText; try { const d = await r.json(); if (d.detail) e = JSON.stringify(d.detail) } catch (x) { }; const error = `Error ${r.status}: ${e}`; if (streamMessageIndex >= 0) this.msgs[streamMessageIndex] = { role: 'assistant', content: '', error, pending: false }; else this.msgs.push({ role: 'assistant', content: '', error }) }
         else if (this.cfg.stream === 'on') {
           const reader = r.body.getReader(); const dec = new TextDecoder(); const idx = streamMessageIndex; let buf = ''; let received = false;
+          let streamedContent = ''; let streamedThinking = ''; let lastPaint = 0;
+          const paintStream = (force = false) => {
+            const now = performance.now();
+            if (!force && now - lastPaint < 50) return false;
+            this.msgs[idx] = {
+              ...this.msgs[idx],
+              content: streamedContent,
+              thinking: streamedThinking,
+              pending: false,
+            };
+            lastPaint = now;
+            return true;
+          };
           this.msgs[idx] = { ...this.msgs[idx], content: '正在等待模型回复…' };
           while (true) {
             const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop();
@@ -680,21 +735,18 @@ function app() {
                   const d = JSON.parse(ln.slice(6)); const delta = d.choices?.[0]?.delta || {};
                   const c = delta.content; const th = delta.reasoning_content || delta.thinking || delta.reasoning;
                   if (c || th) {
-                    const current = this.msgs[idx];
-                    this.msgs[idx] = {
-                      ...current,
-                      content: `${received ? current.content : ''}${c || ''}`,
-                      thinking: `${received ? current.thinking : ''}${th || ''}`,
-                      pending: false,
-                    };
+                    streamedContent += c || '';
+                    streamedThinking += th || '';
                     received = true;
                   }
                 } catch (e) { }
               }
             }
-            this.scrollDown()
+            if (received && paintStream()) this.scrollDown();
           }
-          if (!received) this.msgs[idx] = { ...this.msgs[idx], content: '(无响应内容)', pending: false };
+          if (received) paintStream(true);
+          else this.msgs[idx] = { ...this.msgs[idx], content: '(无响应内容)', pending: false };
+          this.scrollDown();
           this.saveToCache();
         } else {
           const d = await r.json(); const msg = d.choices?.[0]?.message || {};
@@ -705,6 +757,13 @@ function app() {
       finally { this.busy = false; this.scrollDown(); this.saveToCache() }
     },
 
-    fmtDate(s) { if (!s) return '-'; try { return new Date(s).toLocaleString() } catch (e) { return s } }
+    fmtDate(s) { if (!s) return '-'; try { return new Date(s).toLocaleString() } catch (e) { return s } },
+    fmtBytes(value) {
+      const bytes = Number(value || 0);
+      if (!bytes) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+      return `${(bytes / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+    }
   }
 }

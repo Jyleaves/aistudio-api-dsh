@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-24
+
+### Added
+
+- Add resumable update downloads using HTTP range requests, with automatic
+  retry and exponential backoff after transient network failures.
+- Show the current version, latest version, package size, downloaded bytes,
+  retry state, and resume state on the desktop update page.
+- Add Windows file and product version metadata to `Asteria.exe`.
+- Define v1.0.0 as the minimum cumulative-update baseline and direct older
+  installations to the full installer instead of attempting an unsafe jump.
+
+### Changed
+
+- Download updates to a `.part` file, flush them to disk, verify SHA-256, and
+  atomically rename them before installation. A verified cached package is
+  reused instead of downloaded again.
+- Retain at most two recent update installers, remove installers after their
+  version is running, and discard completed installers or partial downloads
+  older than seven days.
+- Batch streaming Playground updates to reduce repeated Markdown rendering,
+  merge pending scroll operations, slow account-status polling to five
+  seconds, and pause it while the window is hidden.
+- Bound persisted Playground history to 100 recent messages and approximately
+  one million characters, excluding embedded base64 images from synchronous
+  browser storage.
+- Exclude Playwright TypeScript declarations and optional trace/recorder web
+  assets from the Windows application bundle.
+- Remove those development-only Playwright assets during cumulative updates
+  when an older installation left them behind.
+- Refresh desktop static-asset cache keys so upgraded clients immediately load
+  the v1.0.2 performance and interface changes.
+- Keep only Chinese and English Chromium locale packs in the full installer,
+  and omit browser installer, updater, WebDriver, notification, proxy, and PWA
+  helper executables that the headless Playwright runtime never launches.
+- Validate the cached Chromium build against Playwright's declared browser
+  revision during Windows packaging, preventing stale local browser caches
+  from producing incompatible release installers.
+
+### Fixed
+
+- Preserve partial update downloads after a connection interruption so the
+  next attempt can continue instead of restarting from zero.
+- Restart a partial download safely when a server ignores the requested byte
+  range, preventing duplicated or corrupted packages.
+- Prevent long streaming responses and accumulated local chat history from
+  causing progressively more expensive UI work.
+- Skip a warm browser immediately after its account fails when another account
+  can be started, while retaining single-account self-recovery behavior.
+
+### Security
+
+- Keep incomplete and unverified update data separate from executable files;
+  only a package matching the published SHA-256 digest becomes installable.
+
 ## [1.0.1] - 2026-08-24
 
 ### Added
@@ -46,5 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.0...v1.0.1

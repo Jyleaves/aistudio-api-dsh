@@ -53,24 +53,85 @@ try {
     # copy in the project directory so builds do not depend on a user cache.
     $projectBrowserRoot = Join-Path $root "cloakbrowser-chromium"
     $bundledBrowserRoot = Join-Path $root "dist\Asteria\cloakbrowser-chromium"
+    $projectBrowserFullPath = [IO.Path]::GetFullPath($projectBrowserRoot)
+    $projectRootFullPath = [IO.Path]::GetFullPath($root)
+    if (-not $projectBrowserFullPath.StartsWith($projectRootFullPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to refresh browser cache outside project: $projectBrowserFullPath"
+    }
+    $playwrightManifestPath = Join-Path $root ".venv\Lib\site-packages\playwright\driver\package\browsers.json"
+    if (-not (Test-Path -LiteralPath $playwrightManifestPath)) {
+        throw "Playwright browser manifest not found: $playwrightManifestPath"
+    }
+    $playwrightManifest = Get-Content -LiteralPath $playwrightManifestPath -Raw | ConvertFrom-Json
+    $expectedChromium = $playwrightManifest.browsers | Where-Object { $_.name -eq "chromium" } | Select-Object -First 1
+    if (-not $expectedChromium.browserVersion -or -not $expectedChromium.revision) {
+        throw "Unable to read the required Chromium version from Playwright"
+    }
+    $browserRoot = Join-Path $env:LOCALAPPDATA "ms-playwright"
+    $installedChromium = Join-Path $browserRoot "chromium-$($expectedChromium.revision)"
+    $installedChrome = Get-ChildItem $installedChromium -Recurse -Filter "chrome.exe" -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1
     $projectChrome = Get-ChildItem $projectBrowserRoot -Recurse -Filter "chrome.exe" -File -ErrorAction SilentlyContinue |
         Select-Object -First 1
-    if (-not $projectChrome) {
-        $browserRoot = Join-Path $env:LOCALAPPDATA "ms-playwright"
-        $chromium = Get-ChildItem $browserRoot -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending | Select-Object -First 1
-        if (-not $chromium) {
-            throw "Playwright Chromium not found. Run: $python -m playwright install chromium"
-        }
-        if (Test-Path $projectBrowserRoot) { Remove-Item -LiteralPath $projectBrowserRoot -Recurse -Force }
+
+    if ($installedChrome) {
+        $browserSourceRoot = $installedChromium
+    } elseif ($projectChrome -and $projectChrome.VersionInfo.ProductVersion -eq $expectedChromium.browserVersion) {
+        $browserSourceRoot = $projectBrowserRoot
+    } else {
+        $actualVersion = if ($projectChrome) { $projectChrome.VersionInfo.ProductVersion } else { "missing" }
+        throw "Bundled Chromium $actualVersion does not match Playwright $($expectedChromium.browserVersion). Run: $python -m playwright install chromium"
+    }
+    if (-not ([IO.Path]::GetFullPath($browserSourceRoot)).Equals([IO.Path]::GetFullPath($projectBrowserRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        if (Test-Path -LiteralPath $projectBrowserFullPath) { Remove-Item -LiteralPath $projectBrowserFullPath -Recurse -Force }
         New-Item -ItemType Directory -Path $projectBrowserRoot -Force | Out-Null
-        Get-ChildItem -LiteralPath $chromium.FullName -Force |
+        Get-ChildItem -LiteralPath $browserSourceRoot -Force |
             Copy-Item -Destination $projectBrowserRoot -Recurse -Force
     }
     if (Test-Path $bundledBrowserRoot) { Remove-Item -LiteralPath $bundledBrowserRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $bundledBrowserRoot -Force | Out-Null
     Get-ChildItem -LiteralPath $projectBrowserRoot -Force |
         Copy-Item -Destination $bundledBrowserRoot -Recurse -Force
+
+    # The bundled browser is a headless API runtime, not a general-purpose
+    # Chrome installation. Keep Chinese plus Chromium's English fallback and
+    # remove installer/updater helpers that Playwright never launches. Prune
+    # only the disposable dist copy; the project browser cache remains intact.
+    $browserDistRoot = [IO.Path]::GetFullPath($bundledBrowserRoot)
+    if (-not $browserDistRoot.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to prune browser files outside dist: $browserDistRoot"
+    }
+    $browserDistChrome = Get-ChildItem -LiteralPath $browserDistRoot -Recurse -Filter "chrome.exe" -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $browserDistChrome) {
+        throw "Copied Chromium runtime does not contain chrome.exe: $browserDistRoot"
+    }
+    $browserRuntimeRoot = [IO.Path]::GetFullPath($browserDistChrome.DirectoryName)
+    $runtimeIsBundleRoot = $browserRuntimeRoot.Equals($browserDistRoot, [StringComparison]::OrdinalIgnoreCase)
+    $runtimeIsInsideBundle = $browserRuntimeRoot.StartsWith($browserDistRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    if (-not $runtimeIsBundleRoot -and -not $runtimeIsInsideBundle) {
+        throw "Refusing to prune browser runtime outside bundle: $browserRuntimeRoot"
+    }
+    $localeRoot = Join-Path $browserRuntimeRoot "locales"
+    if (Test-Path -LiteralPath $localeRoot) {
+        $keptLocales = @("en-US.pak", "zh-CN.pak")
+        Get-ChildItem -LiteralPath $localeRoot -File |
+            Where-Object { $_.Name -notin $keptLocales } |
+            Remove-Item -Force
+    }
+    foreach ($unusedBrowserHelper in @(
+        "chromedriver.exe",
+        "setup.exe",
+        "elevation_service.exe",
+        "notification_helper.exe",
+        "chrome_pwa_launcher.exe",
+        "chrome_proxy.exe"
+    )) {
+        $unusedBrowserHelperPath = Join-Path $browserRuntimeRoot $unusedBrowserHelper
+        if (Test-Path -LiteralPath $unusedBrowserHelperPath) {
+            Remove-Item -LiteralPath $unusedBrowserHelperPath -Force
+        }
+    }
 
     # Build a second staging directory for existing users. It contains the
     # application only and intentionally reuses the installed browser.

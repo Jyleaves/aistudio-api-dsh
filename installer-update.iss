@@ -3,7 +3,7 @@
 
 #define MyAppName "Asteria"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.1"
+  #define MyAppVersion "1.0.2"
 #endif
 #define MyAppPublisher "Jyleaves"
 #define MyAppURL "https://github.com/Jyleaves/aistudio-api-dsh"
@@ -44,6 +44,13 @@ Name: "chinesesimplified"; MessagesFile: "installer-languages\ChineseSimplified.
 
 [Files]
 Source: "dist\Asteria-update\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; Remove development-only Playwright resources shipped by earlier releases.
+; Keep this list narrow so cumulative updates never disturb user data, the
+; bundled browser, or the full installer's uninstall metadata.
+Type: filesandordirs; Name: "{app}\_internal\playwright\driver\package\types"
+Type: filesandordirs; Name: "{app}\_internal\playwright\driver\package\lib\vite"
 
 [Run]
 #ifndef TestMode

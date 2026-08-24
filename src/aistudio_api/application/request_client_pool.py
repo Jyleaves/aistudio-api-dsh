@@ -227,7 +227,23 @@ class RequestClientPool:
         ]
         if not candidates:
             return None
-        return min(candidates, key=lambda worker: (order[worker.account_id], worker.last_used))
+        reusable = candidates
+        if self._rotator is not None and hasattr(self._rotator, "should_avoid_warm_reuse"):
+            reusable = [
+                worker
+                for worker in candidates
+                if not self._rotator.should_avoid_warm_reuse(worker.account_id)
+            ]
+            if not reusable:
+                # Prefer launching an untried account. If every candidate
+                # already owns a worker, reuse the best failed worker so a
+                # single-account installation can recover instead of waiting
+                # forever.
+                worker_accounts = {worker.account_id for worker in self._workers}
+                if any(account.id not in worker_accounts for account in accounts):
+                    return None
+                reusable = candidates
+        return min(reusable, key=lambda worker: (order[worker.account_id], worker.last_used))
 
     async def _checkout(
         self,
