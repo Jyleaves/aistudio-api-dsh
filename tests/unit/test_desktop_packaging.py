@@ -70,7 +70,9 @@ def test_frozen_desktop_runtime_keeps_the_pywebview_api():
 
     assert "collect_data_files('webview', include_py_files=True)" in spec
     assert "Start-Process -FilePath $packagedExe" in build_script
-    assert "-Wait -PassThru -WindowStyle Hidden" in build_script
+    assert '-ArgumentList "_packaging-smoke" -PassThru -WindowStyle Hidden' in build_script
+    assert "$packagingSmoke.WaitForExit(30000)" in build_script
+    assert "$packagingSmoke.Kill()" in build_script
     assert "$packagingSmoke.ExitCode" in build_script
     assert "packaged pywebview is missing" in main
     assert '("create_window", "start")' in main

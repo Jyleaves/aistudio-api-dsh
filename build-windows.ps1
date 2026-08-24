@@ -54,7 +54,11 @@ try {
     # Unit tests run from source and cannot detect a namespace-package shadow
     # inside PyInstaller's on-disk layout.
     $packagedExe = Join-Path $root "dist\Asteria\Asteria.exe"
-    $packagingSmoke = Start-Process -FilePath $packagedExe -ArgumentList "_packaging-smoke" -Wait -PassThru -WindowStyle Hidden
+    $packagingSmoke = Start-Process -FilePath $packagedExe -ArgumentList "_packaging-smoke" -PassThru -WindowStyle Hidden
+    if (-not $packagingSmoke.WaitForExit(30000)) {
+        try { $packagingSmoke.Kill() } catch { }
+        throw "Packaged desktop runtime smoke test timed out after 30 seconds"
+    }
     if ($packagingSmoke.ExitCode -ne 0) { throw "Packaged desktop runtime smoke test failed with exit code $($packagingSmoke.ExitCode)" }
 
     if (-not $UpdateOnly) {
