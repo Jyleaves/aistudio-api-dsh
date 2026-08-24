@@ -24,6 +24,31 @@ from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.config import settings
 
 
+def inline_media_bytes(normalized: dict) -> int:
+    """Estimate decoded inline-media bytes without allocating decoded buffers."""
+    total = 0
+    contents = list(normalized.get("contents") or [])
+    system_instruction = normalized.get("system_instruction")
+    if system_instruction is not None:
+        contents.append(system_instruction)
+    for content in contents:
+        for part in getattr(content, "parts", ()):
+            inline_data = getattr(part, "inline_data", None)
+            if not inline_data:
+                continue
+            _mime_type, data = inline_data
+            if isinstance(data, str):
+                padding = 2 if data.endswith("==") else 1 if data.endswith("=") else 0
+                total += len(data) * 3 // 4 - padding
+    return total
+
+
+def large_media_lock_for(normalized: dict):
+    if inline_media_bytes(normalized) < settings.large_media_threshold_bytes:
+        return None
+    return runtime_state.large_media_lock
+
+
 async def handle_gemini_generate_content(
     model_path: str,
     req: GeminiGenerateContentRequest,
@@ -41,7 +66,13 @@ async def handle_gemini_generate_content(
     if stream:
         return _build_gemini_streaming_response(client=client, normalized=normalized)
 
+    large_media_lock = large_media_lock_for(normalized)
+    large_media_lock_acquired = False
     try:
+        if large_media_lock is not None:
+            await large_media_lock.acquire()
+            large_media_lock_acquired = True
+            logger.info("Gemini 大媒体请求进入专用队列，inline_bytes=%d", inline_media_bytes(normalized))
         for attempt in range(MAX_RETRIES):
             async with acquire_request_client(
                 client,
@@ -126,6 +157,8 @@ async def handle_gemini_generate_content(
                     raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
         raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
     finally:
+        if large_media_lock_acquired:
+            large_media_lock.release()
         cleanup_files(normalized["cleanup_paths"])
 
 
@@ -165,7 +198,13 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
         final_usage = None
         account_id = None
         attempted_accounts: set[str] = set()
+        large_media_lock = large_media_lock_for(normalized)
+        large_media_lock_acquired = False
         try:
+            if large_media_lock is not None:
+                await large_media_lock.acquire()
+                large_media_lock_acquired = True
+                logger.info("Gemini 大媒体流请求进入专用队列，inline_bytes=%d", inline_media_bytes(normalized))
             for stream_attempt in range(MAX_RETRIES):
                 async with acquire_request_client(
                     client,
@@ -246,6 +285,8 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
             runtime_state.record(normalized["model"], "errors")
             yield "data: " + json.dumps({"error": {"message": str(exc)}}, ensure_ascii=False) + "\n\n"
         finally:
+            if large_media_lock_acquired:
+                large_media_lock.release()
             cleanup_files(normalized["cleanup_paths"])
 
     return StreamingResponse(

@@ -12,6 +12,10 @@ Asteria 将 Google AI Studio 作为本地 API 服务使用，支持多账号、�
 
 默认模型为 `gemini-3.7-flash`。Asteria 支持 OpenAI、Gemini 和 Anthropic 三种接口协议，接入地址会在应用中根据当前端口自动生成。
 
+PDF 当前通过 Gemini `inlineData` 传输。为保证长期运行稳定性，8 MiB 以上的内联媒体默认串行进入 Chromium，HTTP 请求体默认限制为 40 MiB；可通过 `AISTUDIO_LARGE_MEDIA_THRESHOLD_BYTES`、`AISTUDIO_LARGE_MEDIA_MAX_CONCURRENCY` 和 `AISTUDIO_MAX_REQUEST_BYTES` 调整。建议普通用户保持默认值，并将单个 PDF 控制在 dsh 插件默认的 20 MiB / 300 页以内。
+
+最高思考强度会占用 `maxOutputTokens` 的同一输出预算。若客户端手动覆盖该值，不要设成几十或几百；预算过小时可能只剩一行可见正文。dsh 插件默认使用模型的正常大输出上限，无需手动缩小。
+
 ## dsh 接入
 
 安装插件并重启 dsh：

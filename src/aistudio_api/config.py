@@ -292,6 +292,9 @@ class Settings:
     account_max_retries: int = int(os.getenv("AISTUDIO_ACCOUNT_MAX_RETRIES", "3"))
     max_concurrency: int = int(os.getenv("AISTUDIO_MAX_CONCURRENCY", "3"))
     max_idle_browsers: int = int(os.getenv("AISTUDIO_MAX_IDLE_BROWSERS", "1"))
+    large_media_threshold_bytes: int = int(os.getenv("AISTUDIO_LARGE_MEDIA_THRESHOLD_BYTES", str(8 * 1024 * 1024)))
+    large_media_max_concurrency: int = int(os.getenv("AISTUDIO_LARGE_MEDIA_MAX_CONCURRENCY", "1"))
+    max_request_bytes: int = int(os.getenv("AISTUDIO_MAX_REQUEST_BYTES", str(40 * 1024 * 1024)))
     default_text_model: str = os.getenv("AISTUDIO_DEFAULT_TEXT_MODEL", DEFAULT_TEXT_MODEL)
     default_image_model: str = os.getenv("AISTUDIO_DEFAULT_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
 

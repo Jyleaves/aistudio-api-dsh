@@ -121,6 +121,36 @@ def test_modify_body_sanitizes_plain_text_generation_config():
     assert len(json.loads(rewritten)[3]) <= 17 or json.loads(rewritten)[3][17] is None
 
 
+def test_modify_body_does_not_inherit_captured_newline_stop_sequence():
+    original = '["models/original",[[[[null,"old"]],"user"]],null,[null,["\\n"],null,128,0.5,0.8,16],"!snap",null,null]'
+
+    rewritten = modify_body(
+        original,
+        model="models/gemini-3.7-flash",
+        prompt="ALPHA\\nBETA\\nGAMMA",
+        max_tokens=64,
+        sanitize_plain_text=False,
+    )
+
+    body = json.loads(rewritten)
+    assert body[3][1] is None
+    assert body[3][3] == 64
+
+
+def test_modify_body_preserves_explicit_stop_sequences_after_reset():
+    original = '["models/original",[[[[null,"old"]],"user"]],null,[null,["\\n"],null,128],"!snap",null,null]'
+
+    rewritten = modify_body(
+        original,
+        model="models/gemini-3.7-flash",
+        prompt="hello",
+        generation_config_overrides={"stop_sequences": ["STOP"]},
+        sanitize_plain_text=False,
+    )
+
+    assert json.loads(rewritten)[3][1] == ["STOP"]
+
+
 def test_modify_body_enables_thinking_for_any_model():
     original = '["models/original",[[[[null,"old"]],"user"]],null,[null,null,null,128,0.5,0.8,16],"!snap",null,null]'
     rewritten = modify_body(

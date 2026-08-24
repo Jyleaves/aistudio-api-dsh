@@ -241,6 +241,10 @@ class AistudioWireCodec:
                 else None
             )
 
+        # The captured browser request is only a transport template. Its UI
+        # generation options (especially a newline stop sequence) must never
+        # leak into API calls that did not request them.
+        request.generation_config.reset_api_fields()
         defaults = model_defaults.generation_config_overrides()
         for attr, value in defaults.items():
             setattr(request.generation_config, attr, value)

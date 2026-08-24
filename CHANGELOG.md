@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-24
+
 ### Added
 
 - Advertise supported reasoning efforts and the default effort in OpenAI model
@@ -16,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Use the highest AI Studio thinking level when an OpenAI-compatible client
   omits `reasoning_effort`.
+- Route inline media of 8 MiB or more through a dedicated single-request queue
+  by default, preventing concurrent large PDFs from multiplying memory across
+  API and Chromium workers. The threshold and concurrency remain configurable.
+- Reject declared HTTP request bodies larger than 40 MiB before parsing their
+  JSON, returning HTTP 413 instead of risking process-wide memory exhaustion.
 
 ### Fixed
 
@@ -24,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Create the configured temporary directory before decoding Gemini inline
   images, preventing first-run image requests from failing with HTTP 500 after
   the temporary directory has been cleaned.
+- Clear generation settings inherited from the browser capture template before
+  applying API options. In particular, a stale newline stop sequence no longer
+  truncates otherwise valid responses after their first line.
 
 ## [1.0.2] - 2026-08-24
 
@@ -121,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.0...v1.0.1

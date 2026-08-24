@@ -202,6 +202,12 @@ class AistudioGenerationConfig:
         if len(self.values) > 16:
             self.values[16] = None
 
+    def reset_api_fields(self):
+        """Drop generation settings inherited from the browser capture template."""
+        for index in (1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 17, 26):
+            if index < len(self.values):
+                self.values[index] = None
+
     def enable_default_thinking(self):
         if self.thinking_config is None:
             self.thinking_config = AistudioThinkingConfig.default().to_wire()

@@ -8,7 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     runtime_state.client = client
     from aistudio_api.config import settings as app_settings
     runtime_state.busy_lock = asyncio.Semaphore(app_settings.max_concurrency)
+    runtime_state.large_media_lock = asyncio.Semaphore(max(1, app_settings.large_media_max_concurrency))
 
     # 注入 snapshot 缓存引用，切号时需要清除
     from aistudio_api.infrastructure.gateway.client import _snapshot_cache
@@ -147,6 +148,7 @@ async def lifespan(app: FastAPI):
             logger.exception("关闭后台浏览器时出错")
         runtime_state.client = None
         runtime_state.busy_lock = None
+        runtime_state.large_media_lock = None
         runtime_state.request_pool = None
         runtime_state.account_service = None
         runtime_state.rotator = None
@@ -154,6 +156,32 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Studio API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def reject_oversized_request(request: Request, call_next):
+    """Reject declared oversized bodies before FastAPI materializes their JSON."""
+    from aistudio_api.config import settings
+
+    raw_length = request.headers.get("content-length")
+    if settings.max_request_bytes > 0 and raw_length:
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            content_length = 0
+        if content_length > settings.max_request_bytes:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": {
+                        "message": f"Request body exceeds {settings.max_request_bytes} bytes",
+                        "type": "request_too_large",
+                    }
+                },
+            )
+    return await call_next(request)
+
+
 app.include_router(system_public_router)
 app.include_router(system_protected_router, dependencies=[Depends(require_api_key)])
 app.include_router(gemini_router, dependencies=[Depends(require_api_key)])

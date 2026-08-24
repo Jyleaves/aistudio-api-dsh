@@ -7,7 +7,7 @@ function app() {
     accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
-    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.2', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
+    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.3', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
     settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },

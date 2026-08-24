@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -65,11 +66,11 @@ def test_release_packaging_uses_brand_and_icon():
 def test_release_artifact_name_and_version_are_consistent():
     installer = (ROOT / "installer.iss").read_text(encoding="utf-8")
     updater = (ROOT / "installer-update.iss").read_text(encoding="utf-8")
-    package = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project_version = package["project"]["version"]
 
-    assert '#define MyAppVersion "1.0.2"' in installer
-    assert '#define MyAppVersion "1.0.2"' in updater
-    assert 'version = "1.0.2"' in package
+    assert f'#define MyAppVersion "{project_version}"' in installer
+    assert f'#define MyAppVersion "{project_version}"' in updater
     assert "OutputBaseFilename=Asteria-setup-{#MyAppVersion}" in installer
     assert "OutputBaseFilename=Asteria-update-{#MyAppVersion}" in updater
     assert "skipifsilent" not in next(line for line in updater.splitlines() if line.startswith("Filename:"))

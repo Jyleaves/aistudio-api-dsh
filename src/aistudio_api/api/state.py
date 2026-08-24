@@ -15,6 +15,7 @@ from aistudio_api.infrastructure.gateway.client import AIStudioClient
 class RuntimeState:
     client: AIStudioClient | None = None
     busy_lock: asyncio.Semaphore | None = None
+    large_media_lock: asyncio.Semaphore | None = None
     request_pool: object | None = None
     browser_port: int = 9222
     snapshot_cache: object | None = None  # SnapshotCache 实例
