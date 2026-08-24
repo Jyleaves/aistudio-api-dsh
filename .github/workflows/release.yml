@@ -37,13 +37,15 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup --no-progress -y
-          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup*', 'C:\Program Files\Inno Setup*' -Filter ISCC.exe -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { Test-Path (Join-Path $_.Directory.FullName 'Languages\ChineseSimplified.isl') } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
+          $iscc = @(
+            'C:\Program Files\Inno Setup 7\ISCC.exe',
+            'C:\Program Files (x86)\Inno Setup 7\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe',
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
           if (-not $iscc) { throw 'ISCC.exe was not found after installing Inno Setup' }
-          "ISCC_PATH=$($iscc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using Inno Setup: $($iscc.FullName)"
+          "ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using Inno Setup: $iscc"
 
       - name: Build installer
         shell: pwsh
