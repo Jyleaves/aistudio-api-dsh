@@ -61,18 +61,24 @@ def test_release_packaging_uses_brand_and_icon():
 
 def test_release_artifact_name_and_version_are_consistent():
     installer = (ROOT / "installer.iss").read_text(encoding="utf-8")
+    updater = (ROOT / "installer-update.iss").read_text(encoding="utf-8")
     package = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert '#define MyAppVersion "1.0.0"' in installer
-    assert 'version = "1.0.0"' in package
+    assert '#define MyAppVersion "1.0.1"' in installer
+    assert '#define MyAppVersion "1.0.1"' in updater
+    assert 'version = "1.0.1"' in package
     assert "OutputBaseFilename=Asteria-setup-{#MyAppVersion}" in installer
+    assert "OutputBaseFilename=Asteria-update-{#MyAppVersion}" in updater
+    assert "skipifsilent" not in next(line for line in updater.splitlines() if line.startswith("Filename:"))
+    assert "runasoriginaluser" in next(line for line in updater.splitlines() if line.startswith("Filename:"))
 
 
-def test_server_startup_warms_all_accounts_without_blocking_ui():
+def test_server_startup_warms_only_active_account_without_blocking_ui():
     source = (ROOT / "src" / "aistudio_api" / "api" / "app.py").read_text(encoding="utf-8")
 
     assert "runtime_state.ready = True" in source
-    assert "prepare_all_accounts()" in source
+    assert "prepare_account(active_account.id)" in source
+    assert "prepare_all_accounts()" not in source
     assert "asyncio.create_task(" in source
     assert 'name="aistudio-account-warmup"' in source
     assert "account_warmup_task.cancel()" in source

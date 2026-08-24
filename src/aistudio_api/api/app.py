@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
     # API 与 UI 先就绪；账号浏览器随后在后台并行初始化。已经完成初始化
     # 的账号可以立即处理请求，不需要等待其余账号。
     runtime_state.ready = True
-    runtime_state.ready_message = "已就绪，正在准备账号"
+    runtime_state.ready_message = "已就绪"
 
     # 初始化账号轮询器
     rotation_mode = getattr(settings, "account_rotation_mode", "round_robin")
@@ -74,31 +74,40 @@ async def lifespan(app: FastAPI):
     runtime_state.request_pool = RequestClientPool(
         account_store,
         max_concurrency=app_settings.max_concurrency,
+        max_idle_browsers=app_settings.max_idle_browsers,
         port=runtime_state.browser_port,
         rotator=rotator,
         control_client=client,
     )
 
     account_warmup_task: asyncio.Task | None = None
-    warmup_account_count = len(account_store.list_accounts())
-    if warmup_account_count:
-        runtime_state.ready_message = f"已就绪，正在后台初始化 {warmup_account_count} 个账号"
+    accounts = account_store.list_accounts()
+    active_account = account_store.get_active_account()
+    if active_account is not None:
+        runtime_state.ready_message = "已就绪，正在后台准备当前账号"
 
-        async def warm_all_accounts() -> None:
-            logger.info("开始后台并行初始化全部账号 accounts=%d", warmup_account_count)
-            failures = await runtime_state.request_pool.prepare_all_accounts()
-            if failures:
-                runtime_state.ready_message = (
-                    f"已就绪，{warmup_account_count - len(failures)} 个账号可用，"
-                    f"{len(failures)} 个账号异常"
-                )
-                logger.warning("全部账号初始化完成，异常账号=%s", sorted(failures))
+        async def warm_active_account() -> None:
+            logger.info(
+                "开始后台初始化当前账号 account=%s total_accounts=%d",
+                active_account.id,
+                len(accounts),
+            )
+            try:
+                await runtime_state.request_pool.prepare_account(active_account.id)
+            except Exception as exc:
+                runtime_state.ready_message = "已就绪，当前账号异常；其他账号将按需启动"
+                logger.warning("当前账号初始化失败 account=%s: %s", active_account.id, exc)
             else:
-                runtime_state.ready_message = f"已就绪，{warmup_account_count} 个账号可用"
-                logger.info("全部账号后台初始化完成 accounts=%d", warmup_account_count)
+                standby = max(0, len(accounts) - 1)
+                runtime_state.ready_message = (
+                    f"已就绪，当前账号可用，{standby} 个账号按需启动"
+                    if standby
+                    else "已就绪，当前账号可用"
+                )
+                logger.info("当前账号后台初始化完成 account=%s", active_account.id)
 
         account_warmup_task = asyncio.create_task(
-            warm_all_accounts(),
+            warm_active_account(),
             name="aistudio-account-warmup",
         )
 

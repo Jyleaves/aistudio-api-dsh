@@ -34,6 +34,17 @@ from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.config import settings
 
 
+_MAX_ANTHROPIC_TOOL_CONTEXTS = 256
+
+
+def _remember_anthropic_tool_context(tool_use_id: str, payload: dict[str, Any]) -> None:
+    """Retain recent tool metadata without growing process memory forever."""
+    contexts = runtime_state.anthropic_tool_context
+    contexts[tool_use_id] = payload
+    while len(contexts) > _MAX_ANTHROPIC_TOOL_CONTEXTS:
+        contexts.pop(next(iter(contexts)))
+
+
 class _AsyncNullContext:
     async def __aenter__(self):
         return None
@@ -155,19 +166,19 @@ def _prepare_anthropic_function_calls(function_calls: list[dict] | None) -> list
         call["anthropic_tool_use_id"] = tool_use_id
         thought_signature = call.get("thought_signature")
         if thought_signature:
-            runtime_state.anthropic_tool_context[tool_use_id] = {
+            _remember_anthropic_tool_context(tool_use_id, {
                 "call_id": call_id,
                 "thought_signature": thought_signature,
                 "name": call.get("name", "unknown"),
                 "synthetic": bool(call.get("synthetic")),
-            }
+            })
         elif call.get("synthetic"):
-            runtime_state.anthropic_tool_context[tool_use_id] = {
+            _remember_anthropic_tool_context(tool_use_id, {
                 "call_id": call_id,
                 "thought_signature": "",
                 "name": call.get("name", "unknown"),
                 "synthetic": True,
-            }
+            })
         prepared.append(call)
     return prepared
 

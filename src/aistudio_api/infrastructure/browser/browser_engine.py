@@ -170,6 +170,21 @@ _BACKGROUND_BROWSER_HINT = (
 # 对齐 cloakbrowser 包的启动参数：不带自动化痕迹标记
 _CHROMIUM_IGNORE_DEFAULT_ARGS = ["--enable-automation", "--enable-unsafe-swiftshader"]
 
+_BACKGROUND_RESOURCE_ARGS = [
+    "--disable-breakpad",
+    "--disable-component-update",
+    "--disable-crash-reporter",
+    "--disable-default-apps",
+    "--disable-extensions",
+    "--disable-sync",
+    "--mute-audio",
+    "--no-default-browser-check",
+    "--no-first-run",
+    # The worker reads and writes JSON through XHR. It never needs to decode or
+    # composite page images, which are a large part of AI Studio's idle GPU use.
+    "--blink-settings=imagesEnabled=false",
+]
+
 
 def detect_background_browser() -> dict[str, str] | None:
     """发现后台请求浏览器。
@@ -256,8 +271,8 @@ def _background_launch_args(kind: str, *, headless: bool, stable_fingerprint_key
         # worker present the same real machine identity as the login browser.
         return _build_cloakbrowser_args(
             headless=headless, stable_fingerprint_key=None
-        )
-    args: list[str] = []
+        ) + list(_BACKGROUND_RESOURCE_ARGS)
+    args: list[str] = list(_BACKGROUND_RESOURCE_ARGS)
     if not headless:
         args.append("--start-maximized")
     return args

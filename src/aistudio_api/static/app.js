@@ -7,7 +7,7 @@ function app() {
     accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
-    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.0', latest: '', asset_size: 0, error: '' },
+    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.1', latest: '', asset_size: 0, error: '' },
     settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },
@@ -21,7 +21,7 @@ function app() {
     loginPreviousActiveId: '',
     accountPreparations: {}, accountInitErrors: {},
     appReady: false, appReadyMessage: '正在初始化...',
-    requestPoolStatus: { ready_accounts: [], initializing_accounts: [], failed_accounts: {} },
+    requestPoolStatus: { ready_accounts: [], standby_accounts: [], initializing_accounts: [], failed_accounts: {} },
     accountWarmupMonitoring: false,
     accountStatusTimer: null,
 
@@ -177,8 +177,7 @@ function app() {
       return Object.keys(this.accountPreparations).length > 0;
     },
     get hasInitializingAccounts() {
-      const ready = new Set(this.requestPoolStatus.ready_accounts || []);
-      return this.accounts.some(account => !ready.has(account.id) && !this.accountInitErrors[account.id]);
+      return (this.requestPoolStatus.initializing_accounts || []).length > 0;
     },
     async monitorAccountWarmup() {
       if (this.accountWarmupMonitoring) return;
@@ -423,7 +422,9 @@ function app() {
         ...(this.accountMetrics[a.id] || {}),
         availability: this.accountInitErrors[a.id]
           ? 'failed'
-          : ((this.requestPoolStatus.ready_accounts || []).includes(a.id) ? 'available' : 'initializing'),
+          : ((this.requestPoolStatus.initializing_accounts || []).includes(a.id)
+            ? 'initializing'
+            : ((this.requestPoolStatus.ready_accounts || []).includes(a.id) ? 'available' : 'standby')),
       }));
     },
     get totalReqs() { return Object.values(this.stats).reduce((s, v) => s + (v.requests || 0), 0) },

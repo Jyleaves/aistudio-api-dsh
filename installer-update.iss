@@ -3,7 +3,7 @@
 
 #define MyAppName "Asteria"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.1"
 #endif
 #define MyAppPublisher "Jyleaves"
 #define MyAppURL "https://github.com/Jyleaves/aistudio-api-dsh"
@@ -17,13 +17,21 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+#ifdef TestMode
+PrivilegesRequired=lowest
+#else
 PrivilegesRequired=admin
+#endif
 DefaultDirName={autopf}\{#MyAppName}
 UsePreviousAppDir=yes
 Uninstallable=no
 CreateUninstallRegKey=no
 OutputDir=dist
+#ifdef TestMode
+OutputBaseFilename=Asteria-update-smoke-{#MyAppVersion}
+#else
 OutputBaseFilename=Asteria-update-{#MyAppVersion}
+#endif
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -38,4 +46,8 @@ Name: "chinesesimplified"; MessagesFile: "installer-languages\ChineseSimplified.
 Source: "dist\Asteria-update\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+#ifndef TestMode
+; The updater is launched silently by Asteria, so this entry must not use
+; skipifsilent. Drop elevation before restarting the desktop application.
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait runasoriginaluser
+#endif

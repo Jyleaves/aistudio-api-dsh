@@ -55,15 +55,16 @@ def test_login_polling_keeps_existing_active_account_and_recovers_transient_erro
     assert "当前账号未切换" not in script
 
 
-def test_account_pool_ui_has_no_manual_activation_or_standby_state():
+def test_account_pool_ui_explains_on_demand_standby_state():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 
     assert "手动激活" not in html
-    assert ">待命<" not in html
+    assert "待命（按需启动）" in html
     assert "当前激活账号" not in html
     assert "登录后会自动加入可用账号池" in html
-    assert "(this.requestPoolStatus.ready_accounts || []).includes(a.id) ? 'available' : 'initializing'" in script
+    assert "? 'initializing'" in script
+    assert "? 'available' : 'standby'" in script
     assert "get hasAccountPreparations()" in script
     assert "get hasInitializingAccounts()" in script
     assert "failed_accounts" in script

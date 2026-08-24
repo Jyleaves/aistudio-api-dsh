@@ -46,9 +46,10 @@ class UpdateState:
 
 
 class UpdateService:
-    def __init__(self) -> None:
+    def __init__(self, current_version: str = APP_VERSION) -> None:
         self._lock = threading.RLock()
-        self._state = UpdateState()
+        self._current_version = current_version
+        self._state = UpdateState(current=current_version)
         self._release: dict | None = None
         self._installer: Path | None = None
 
@@ -67,7 +68,7 @@ class UpdateService:
             return self.status()
         request = urllib.request.Request(
             GITHUB_RELEASES_URL,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+            headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{self._current_version}"},
         )
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
@@ -76,7 +77,16 @@ class UpdateService:
             latest = tag.lstrip("vV")
             assets = release.get("assets") or []
             asset = next((item for item in assets if item.get("name") == f"Asteria-update-{latest}.exe"), None)
-            available = bool(latest and _version_tuple(latest) > _version_tuple(APP_VERSION))
+            checksum_asset = next(
+                (item for item in assets if item.get("name") == f"Asteria-update-{latest}.exe.sha256"),
+                None,
+            )
+            available = bool(latest and _version_tuple(latest) > _version_tuple(self._current_version))
+            release_error = None
+            if available and not asset:
+                release_error = "该版本缺少增量更新包，请下载安装包"
+            elif available and not checksum_asset:
+                release_error = "该版本缺少 SHA-256 校验文件，请下载安装包"
             self._release = release
             self._set(
                 status="available" if available else "latest",
@@ -84,7 +94,7 @@ class UpdateService:
                 available=available,
                 progress=0,
                 message=(f"发现新版本 {latest}" if available else "当前已经是最新版本"),
-                error=(None if asset or not available else "该版本缺少增量更新包，请下载安装包"),
+                error=release_error,
                 asset_name=(asset.get("name") if asset else None),
                 asset_size=(asset.get("size") if asset else None),
             )
@@ -98,6 +108,8 @@ class UpdateService:
                 return asdict(self._state)
             if not self._release or not self._state.available:
                 raise RuntimeError("没有可用更新")
+            if self._state.error:
+                raise RuntimeError(self._state.error)
             asset_name = self._state.asset_name
             assets = self._release.get("assets") or []
             asset = next((item for item in assets if item.get("name") == asset_name), None)
@@ -114,7 +126,7 @@ class UpdateService:
         try:
             request = urllib.request.Request(
                 str(asset["browser_download_url"]),
-                headers={"Accept": "application/octet-stream", "User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+                headers={"Accept": "application/octet-stream", "User-Agent": f"{APP_NAME}/{self._current_version}"},
             )
             total = int(asset.get("size") or 0)
             downloaded = 0
@@ -130,7 +142,9 @@ class UpdateService:
                     progress = min(99, int(downloaded * 100 / total)) if total else 0
                     self._set(progress=progress, message=f"正在下载更新 {progress}%")
             expected = self._expected_sha256(asset)
-            if expected and digest.hexdigest().lower() != expected.lower():
+            if not expected:
+                raise RuntimeError("更新包缺少 SHA-256 校验文件")
+            if digest.hexdigest().lower() != expected.lower():
                 target.unlink(missing_ok=True)
                 raise RuntimeError("更新包校验失败")
             with self._lock:
@@ -149,7 +163,7 @@ class UpdateService:
             return None
         request = urllib.request.Request(
             str(checksum_asset["browser_download_url"]),
-            headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+            headers={"User-Agent": f"{APP_NAME}/{self._current_version}"},
         )
         with urllib.request.urlopen(request, timeout=15) as response:
             text = response.read().decode("utf-8", errors="replace")

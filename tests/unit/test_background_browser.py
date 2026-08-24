@@ -25,6 +25,17 @@ def test_cloak_background_args_match_login_device_without_fingerprint():
 
     assert all(not arg.startswith("--fingerprint=") for arg in args)
     assert "--fingerprint-platform=windows" in args
+    assert "--blink-settings=imagesEnabled=false" in args
+    assert "--mute-audio" in args
+
+
+def test_standard_background_args_disable_non_api_visual_work():
+    args = engine._background_launch_args("chromium", headless=True)
+
+    assert "--blink-settings=imagesEnabled=false" in args
+    assert "--disable-extensions" in args
+    assert "--disable-crash-reporter" in args
+    assert "--mute-audio" in args
 
 
 def test_discovery_prefers_env_executable_then_bundled_then_system(monkeypatch, tmp_path):

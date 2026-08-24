@@ -396,6 +396,7 @@
                           x-text="a.rate_limited||0"></span></td>
                       <td><span class="badge badge-amber" x-show="a.availability==='initializing'">初始化中</span><span
                           class="badge badge-green" x-show="a.availability==='available'">可用</span><span
+                          class="badge badge-gray" x-show="a.availability==='standby'">待命（按需启动）</span><span
                           class="badge badge-red" x-show="a.availability==='failed'">异常</span></td>
                       <td><div class="action-cell"><button class="btn btn-sm" x-show="a.availability==='failed'"
                           :disabled="accountPreparations[a.id]"
@@ -557,6 +558,7 @@
               <label class="check-row"><input type="checkbox" x-model="settings.browser_chromium_sandbox"><span>启用浏览器安全沙箱</span></label>
               <div class="modal-field"><label>缓存有效时间（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.snapshot_cache_ttl"></div>
               <div class="modal-field"><label>缓存最大条目</label><input class="modal-input" type="number" min="1" x-model.number="settings.snapshot_cache_max"></div>
+              <div class="modal-field"><label>空闲浏览器保留数</label><input class="modal-input" type="number" min="0" x-model.number="settings.max_idle_browsers"><small>建议保留 1 个；设为 0 可最低占用，但每次请求都需重新启动。</small></div>
               <label class="check-row"><input type="checkbox" x-model="settings.dump_raw_response"><span>保存诊断数据</span></label>
               <div class="modal-field"><label>诊断数据目录</label><input class="modal-input" x-model="settings.dump_raw_response_dir"></div>
               <div class="modal-field"><label>账号目录</label><input class="modal-input" x-model="settings.accounts_dir"></div>

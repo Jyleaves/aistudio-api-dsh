@@ -1,6 +1,7 @@
 """Regression tests for the desktop/login failure modes found in manual QA."""
 
 import asyncio
+import threading
 
 import pytest
 from fastapi import HTTPException
@@ -12,7 +13,7 @@ from aistudio_api.application import api_service_common
 from aistudio_api.application.account_service import AccountService
 from aistudio_api.infrastructure.account.login_service import LoginService, LoginSession, LoginStatus
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
-from aistudio_api.infrastructure.gateway.session import BrowserSession
+from aistudio_api.infrastructure.gateway.session import BrowserSession, STREAM_CLEANUP_JS
 
 
 def test_aistudio_url_check_uses_host_not_continue_query():
@@ -20,6 +21,67 @@ def test_aistudio_url_check_uses_host_not_continue_query():
     assert not BrowserSession._is_aistudio_page_url(
         "https://accounts.google.com/v3/signin/identifier?continue=https://aistudio.google.com"
     )
+
+
+def test_streaming_page_state_is_released_after_success_and_cancellation():
+    class Page:
+        def __init__(self, events):
+            self.events = list(events)
+            self.cleanup_calls = []
+
+        def evaluate(self, expression, argument=None):
+            if expression == STREAM_CLEANUP_JS:
+                self.cleanup_calls.append(argument)
+                return None
+            if expression == "rid => window.__stream_next[rid](250)":
+                return self.events.pop(0)
+            return None
+
+    async def run_once(events, *, cancelled=False):
+        page = Page(events)
+        session = BrowserSession.__new__(BrowserSession)
+        session._prepare_streaming_sync = lambda: (
+            page,
+            "https://aistudio.google.com/GenerateContent",
+            {"content-type": "application/json"},
+        )
+        queue = asyncio.Queue()
+        cancel_event = threading.Event()
+        if cancelled:
+            cancel_event.set()
+        session._send_streaming_request_sync(
+            "{}",
+            1000,
+            queue,
+            asyncio.get_running_loop(),
+            cancel_event,
+        )
+        await asyncio.sleep(0)
+        return page, queue
+
+    async def scenario():
+        page, queue = await run_once(
+            [
+                {"type": "status", "status": 200},
+                {"type": "chunk", "text": "ok"},
+                {"type": "done"},
+            ]
+        )
+        assert len(page.cleanup_calls) == 1
+        assert page.cleanup_calls[0]["abort"] is False
+        assert await queue.get() == ("status", 200)
+        assert await queue.get() == ("chunk", b"ok")
+        assert await queue.get() is None
+
+        cancelled_page, cancelled_queue = await run_once([], cancelled=True)
+        assert len(cancelled_page.cleanup_calls) == 1
+        assert cancelled_page.cleanup_calls[0]["abort"] is True
+        tag, error = await cancelled_queue.get()
+        assert tag == "error"
+        assert "no response status" in str(error)
+        assert await cancelled_queue.get() is None
+
+    asyncio.run(scenario())
 
 
 def test_desktop_shutdown_is_local_only_and_invokes_registered_callback():
@@ -60,6 +122,27 @@ def test_desktop_shutdown_rejects_non_desktop_server():
             )
         )
     assert caught.value.status_code == 409
+
+
+def test_desktop_update_schedules_graceful_shutdown_after_start(monkeypatch):
+    from aistudio_api.infrastructure import update_service as update_module
+
+    called = []
+    monkeypatch.setattr(routes_system.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        update_module.update_service,
+        "install",
+        lambda: {"status": "installing", "current": "1.0.0", "latest": "1.0.1"},
+    )
+
+    async def scenario():
+        runtime = type("Runtime", (), {"desktop_shutdown": lambda self: called.append(True)})()
+        result = await routes_system.start_update(runtime)
+        assert result["status"] == "installing"
+        await asyncio.sleep(0.6)
+
+    asyncio.run(scenario())
+    assert called == [True]
 
 
 def test_cached_profile_reenters_explicit_default_model_after_session_rotation(monkeypatch, tmp_path):

@@ -80,6 +80,7 @@ class RequestClientPool:
         account_store: Any,
         *,
         max_concurrency: int,
+        max_idle_browsers: int = 1,
         port: int,
         rotator: Any = None,
         control_client: Any = None,
@@ -87,8 +88,11 @@ class RequestClientPool:
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1")
+        if max_idle_browsers < 0:
+            raise ValueError("max_idle_browsers must be at least 0")
         self._store = account_store
         self._max_concurrency = max_concurrency
+        self._max_idle_browsers = min(max_idle_browsers, max_concurrency)
         self._port = port
         self._rotator = rotator
         self._control_client = control_client
@@ -121,6 +125,10 @@ class RequestClientPool:
         return sum(worker.verified for worker in self._workers)
 
     @property
+    def max_idle_browsers(self) -> int:
+        return self._max_idle_browsers
+
+    @property
     def ready_account_ids(self) -> set[str]:
         return {
             worker.account_id
@@ -140,6 +148,15 @@ class RequestClientPool:
     @property
     def failed_account_errors(self) -> dict[str, str]:
         return dict(self._failed_account_errors)
+
+    @property
+    def standby_account_ids(self) -> set[str]:
+        known = {
+            account.id
+            for account in self._store.list_accounts()
+            if self._store.get_auth_path_optional(account.id, require_exists=True) is not None
+        }
+        return known - self.ready_account_ids - self.initializing_account_ids - set(self._failed_account_errors)
 
     @property
     def saturated(self) -> bool:
@@ -168,13 +185,8 @@ class RequestClientPool:
         return (0, 0.0, 0.0, 0)
 
     def _max_cached_workers(self) -> int:
-        """Keep one warm browser per login while bounding active requests."""
-        logged_in_accounts = sum(
-            1
-            for account in self._store.list_accounts()
-            if self._store.get_auth_path_optional(account.id, require_exists=True) is not None
-        )
-        return max(self._max_concurrency, logged_in_accounts)
+        """Maximum browser processes retained after leases become idle."""
+        return self._max_idle_browsers
 
     def _ordered_accounts(
         self,
@@ -231,34 +243,33 @@ class RequestClientPool:
                 if not accounts:
                     raise RuntimeError("没有可用账号，请先添加账号并完成登录")
 
+                # Reuse an eligible warm browser before starting another one.
+                # With a one-browser idle cache this avoids a close/relaunch on
+                # every round-robin request. Failover still starts another
+                # account when the warm account is busy, excluded or cooling.
                 worker = self._pick_idle_worker(accounts)
                 if worker is not None:
                     worker.busy = True
                     self._active_leases += 1
                     return worker
 
-                # One authoritative profile is allowed per account. If every
-                # eligible account already has a busy worker, queue until one
-                # returns instead of cloning the login profile (Google accepts
-                # the clone's UI session but rejects its native API request).
                 worker_account_ids = {item.account_id for item in self._workers}
                 new_worker_accounts = [
                     account for account in accounts if account.id not in worker_account_ids
                 ]
+
+                # One authoritative profile is allowed per account. If every
+                # eligible account already has a busy worker, queue until one
+                # returns instead of cloning the login profile.
                 if not new_worker_accounts:
                     await self._condition.wait()
                     continue
 
-                # Cached browser count is independent from active API request
-                # concurrency. Every logged-in account may stay warm, while the
-                # semaphore still bounds simultaneous request execution.
-                if len(self._workers) >= self._max_cached_workers():
-                    account_ids = {account.id for account in accounts}
-                    idle_victims = [
-                        item
-                        for item in self._workers
-                        if not item.busy and item.account_id not in account_ids
-                    ]
+                # Active browsers never exceed request concurrency. If the pool
+                # is full but an old worker is idle, replace it with the newly
+                # scheduled account; otherwise wait for an active lease.
+                if len(self._workers) >= self._max_concurrency:
+                    idle_victims = [item for item in self._workers if not item.busy]
                     if idle_victims:
                         victim = min(idle_victims, key=lambda item: item.last_used)
                         self._workers.remove(victim)
@@ -543,12 +554,28 @@ class RequestClientPool:
             )
 
     async def _checkin(self, worker: _Worker) -> None:
+        victims: list[_Worker] = []
         async with self._condition:
             if worker in self._workers:
                 worker.busy = False
                 worker.last_used = time.monotonic()
+                idle_workers = sorted(
+                    (item for item in self._workers if not item.busy),
+                    key=lambda item: item.last_used,
+                    reverse=True,
+                )
+                victims = idle_workers[self._max_cached_workers():]
+                for victim in victims:
+                    self._workers.remove(victim)
             self._active_leases = max(0, self._active_leases - 1)
             self._condition.notify_all()
+        if victims:
+            await asyncio.gather(*(self._close_worker(victim) for victim in victims))
+            logger.info(
+                "[pool] trimmed idle browsers closed=%d retained=%d",
+                len(victims),
+                self._max_idle_browsers,
+            )
 
     @classmethod
     def _persist_verified_worker_sync(cls, worker: _Worker, account_auth: Path) -> None:

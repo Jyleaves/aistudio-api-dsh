@@ -135,6 +135,42 @@ DIALOG_CLEANUP_JS = """(() => {
     document.querySelectorAll('.cdk-overlay-container').forEach((node) => node.remove());
 })()"""
 
+PERFORMANCE_STYLE = """
+html { scroll-behavior: auto !important; }
+*, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    caret-color: transparent !important;
+}
+video, audio { display: none !important; }
+"""
+
+STREAM_CLEANUP_JS = """(args) => {
+    const rid = args.rid;
+    const streams = window.__streams || {};
+    const state = streams[rid];
+    if (state) {
+        const xhr = state.xhr;
+        if (args.abort && xhr && xhr.readyState !== 4) {
+            try { xhr.abort(); } catch (e) {}
+        }
+        if (xhr) {
+            xhr.onreadystatechange = null;
+            xhr.onprogress = null;
+            xhr.onload = null;
+            xhr.onerror = null;
+            xhr.ontimeout = null;
+            xhr.onabort = null;
+        }
+        state.events.length = 0;
+        state.waiter = null;
+        state.xhr = null;
+        delete streams[rid];
+    }
+    if (window.__stream_next) delete window.__stream_next[rid];
+    if (window.__stream_abort) delete window.__stream_abort[rid];
+}"""
+
 BOTGUARD_BOOTSTRAP_PROMPT = "say '1'"
 TEMPLATE_CAPTURE_PROMPT = "say 't'"
 
@@ -483,45 +519,61 @@ class BrowserSession:
 
         deadline = _t.time() + timeout_s
         status_sent = False
-        while _t.time() < deadline:
-            if cancel_event.is_set():
-                log.debug("[stream] cancellation requested for %s", rid)
-                page.evaluate("rid => { if (window.__stream_abort && window.__stream_abort[rid]) window.__stream_abort[rid](); }", rid)
-                break
+        completed = False
+        try:
+            while _t.time() < deadline:
+                if cancel_event.is_set():
+                    log.debug("[stream] cancellation requested for %s", rid)
+                    break
 
-            event = page.evaluate("rid => window.__stream_next[rid](250)", rid)
-            event_type = event.get("type")
+                event = page.evaluate("rid => window.__stream_next[rid](250)", rid)
+                event_type = event.get("type")
 
-            if event_type == "idle":
-                continue
-            if event_type == "status":
-                status = event.get("status", 0)
-                log.debug(f"[stream] got status={status} after {_t.time()-_t0:.1f}s")
-                loop.call_soon_threadsafe(queue.put_nowait, ("status", status))
-                status_sent = True
-                continue
-            if event_type == "chunk":
-                text = event.get("text") or ""
-                if text:
-                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", text.encode("utf-8")))
-                continue
-            if event_type == "error":
-                message = event.get("message", "unknown error")
-                log.debug(f"[stream] error after {_t.time()-_t0:.1f}s: {message}")
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}")))
+                if event_type == "idle":
+                    continue
+                if event_type == "status":
+                    status = event.get("status", 0)
+                    log.debug(f"[stream] got status={status} after {_t.time()-_t0:.1f}s")
+                    loop.call_soon_threadsafe(queue.put_nowait, ("status", status))
+                    status_sent = True
+                    continue
+                if event_type == "chunk":
+                    text = event.get("text") or ""
+                    if text:
+                        loop.call_soon_threadsafe(queue.put_nowait, ("chunk", text.encode("utf-8")))
+                    continue
+                if event_type == "error":
+                    message = event.get("message", "unknown error")
+                    log.debug(f"[stream] error after {_t.time()-_t0:.1f}s: {message}")
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}")))
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                    return
+                if event_type == "done":
+                    completed = True
+                    break
+                if event_type == "aborted":
+                    break
+
+            if not status_sent:
+                log.debug(f"[stream] timeout after {_t.time()-_t0:.1f}s before response status")
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError("streaming request timeout: no response status")))
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 return
-            if event_type in ("done", "aborted"):
-                break
 
-        if not status_sent:
-            log.debug(f"[stream] timeout after {_t.time()-_t0:.1f}s before response status")
-            loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError("streaming request timeout: no response status")))
+            # Signal completion
             loop.call_soon_threadsafe(queue.put_nowait, None)
-            return
-
-        # Signal completion
-        loop.call_soon_threadsafe(queue.put_nowait, None)
+        finally:
+            # Every entry retains an XHR and its complete responseText. Leaving
+            # these random request IDs in page globals grows Chromium's heap on
+            # every stream and eventually makes the renderer spend most of its
+            # time in GC. Clean all success/error/timeout/cancellation paths.
+            try:
+                page.evaluate(
+                    STREAM_CLEANUP_JS,
+                    {"rid": rid, "abort": not completed},
+                )
+            except Exception as exc:
+                log.debug("[stream] page state cleanup failed for %s: %s", rid, exc)
 
     def _prepare_streaming_sync(self):
         """Prepare page for streaming request. Returns (page, url, headers)."""
@@ -1262,6 +1314,7 @@ mw:((hash) => {
                         f" (url={current_url})"
                     )
                 self._wait_for_aistudio_ui_sync(page, _t0)
+                self._apply_page_performance_tuning_sync(page)
                 log.info("[probe] aistudio.navigate_done url=%s elapsed=%.3fs", url, _t.time() - _t0)
                 return
             except Exception as exc:
@@ -1303,6 +1356,18 @@ mw:((hash) => {
         )
         self._verify_account_identity_sync(page)
         self._save_cookies_sync()
+
+    @staticmethod
+    def _apply_page_performance_tuning_sync(page) -> None:
+        """Remove visual work that the headless API worker never displays."""
+        try:
+            page.emulate_media(reduced_motion="reduce")
+        except Exception:
+            pass
+        try:
+            page.add_style_tag(content=PERFORMANCE_STYLE)
+        except Exception:
+            pass
 
     def _install_hooks_sync(self, page) -> None:
         import time as _t

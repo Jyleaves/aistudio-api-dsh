@@ -16,7 +16,11 @@ from aistudio_api.api.schemas import (
 )
 from aistudio_api.api.state import runtime_state
 from aistudio_api.api.routes_system import request_pool_status
-from aistudio_api.application.api_service_anthropic import handle_anthropic_messages
+from aistudio_api.application.api_service_anthropic import (
+    _MAX_ANTHROPIC_TOOL_CONTEXTS,
+    _remember_anthropic_tool_context,
+    handle_anthropic_messages,
+)
 from aistudio_api.application.api_service_gemini import handle_gemini_generate_content
 from aistudio_api.application.api_service_openai import handle_chat
 from aistudio_api.application.account_rotator import AccountRotator
@@ -363,7 +367,7 @@ def test_prepare_account_never_calls_quota_consuming_generation_probe(tmp_path):
     asyncio.run(scenario())
 
 
-def test_adaptive_scheduler_balances_sequential_requests_across_warm_accounts(tmp_path):
+def test_low_resource_pool_reuses_the_single_warm_account(tmp_path):
     async def scenario():
         store = _create_store(tmp_path, count=3)
         account_ids = [account.id for account in store.list_accounts()]
@@ -386,7 +390,8 @@ def test_adaptive_scheduler_balances_sequential_requests_across_warm_accounts(tm
                 selected.append(lease.account_id)
                 rotator.record_success(lease.account_id)
 
-        assert selected == account_ids + account_ids
+        assert len(set(selected)) == 1
+        assert selected[0] in account_ids
         await pool.close()
 
     asyncio.run(scenario())
@@ -510,8 +515,11 @@ def test_prepare_all_accounts_starts_every_account_and_isolates_failure(tmp_path
         release.set()
         failures = await warmup
         assert set(failures) == {account_ids[1]}
-        assert pool.ready_account_ids == {account_ids[0], account_ids[2], account_ids[3]}
-        assert pool.worker_count == 3
+        successful = {account_ids[0], account_ids[2], account_ids[3]}
+        assert len(pool.ready_account_ids) == 1
+        assert pool.ready_account_ids < successful
+        assert pool.standby_account_ids == successful - pool.ready_account_ids
+        assert pool.worker_count == 1
         assert pool.max_concurrency == 2
         assert set(pool.failed_account_errors) == {account_ids[1]}
         assert pool.initializing_account_ids == set()
@@ -1050,14 +1058,97 @@ def test_request_pool_probe_reports_live_capacity(tmp_path):
             assert status == {
                 "enabled": True,
                 "max_concurrency": 3,
+                "max_idle_browsers": 1,
                 "active": 1,
                 "workers": 1,
                 "verified_workers": 0,
                 "saturated": False,
                 "ready_accounts": [],
+                "standby_accounts": [],
                 "initializing_accounts": [store.get_active_account().id],
                 "failed_accounts": {},
             }
         await pool.close()
 
     asyncio.run(scenario())
+
+
+def test_parallel_burst_releases_extra_idle_browsers(tmp_path):
+    async def scenario():
+        store = _create_store(tmp_path, count=3)
+        tracker = _Tracker()
+        clients: list[_FakeClient] = []
+        pool = _pool(
+            store,
+            maximum=3,
+            tracker=tracker,
+            calls=[],
+            clients=clients,
+        )
+        release = asyncio.Event()
+        entered = 0
+        all_entered = asyncio.Event()
+
+        async def use_one():
+            nonlocal entered
+            async with pool.lease():
+                entered += 1
+                if entered == 3:
+                    all_entered.set()
+                await release.wait()
+
+        tasks = [asyncio.create_task(use_one()) for _ in range(3)]
+        await asyncio.wait_for(all_entered.wait(), timeout=1)
+        assert pool.worker_count == 3
+        release.set()
+        await asyncio.gather(*tasks)
+
+        assert pool.worker_count == 1
+        assert sum(client.closed for client in clients) == 2
+        assert len(pool.standby_account_ids) == 3
+        await pool.close()
+
+    asyncio.run(scenario())
+
+
+def test_zero_idle_browser_mode_closes_every_released_worker(tmp_path):
+    async def scenario():
+        store = _create_store(tmp_path)
+        tracker = _Tracker()
+        clients: list[_FakeClient] = []
+
+        def factory(_auth_file: str, _profile_dir: str, account_id: str):
+            client = _FakeClient(account_id, tracker, [])
+            clients.append(client)
+            return client
+
+        pool = RequestClientPool(
+            store,
+            max_concurrency=1,
+            max_idle_browsers=0,
+            port=9222,
+            client_factory=factory,
+        )
+        async with pool.lease():
+            assert pool.worker_count == 1
+        assert pool.worker_count == 0
+        assert clients[0].closed == 1
+        await pool.close()
+
+    asyncio.run(scenario())
+
+
+def test_anthropic_tool_context_cache_is_bounded():
+    original = runtime_state.anthropic_tool_context
+    runtime_state.anthropic_tool_context = {}
+    try:
+        for index in range(_MAX_ANTHROPIC_TOOL_CONTEXTS + 20):
+            _remember_anthropic_tool_context(
+                f"toolu_{index}",
+                {"call_id": str(index)},
+            )
+        assert len(runtime_state.anthropic_tool_context) == _MAX_ANTHROPIC_TOOL_CONTEXTS
+        assert "toolu_0" not in runtime_state.anthropic_tool_context
+        assert f"toolu_{_MAX_ANTHROPIC_TOOL_CONTEXTS + 19}" in runtime_state.anthropic_tool_context
+    finally:
+        runtime_state.anthropic_tool_context = original

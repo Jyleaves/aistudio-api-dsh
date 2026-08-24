@@ -291,6 +291,7 @@ class Settings:
     account_cooldown_seconds: int = int(os.getenv("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "60"))
     account_max_retries: int = int(os.getenv("AISTUDIO_ACCOUNT_MAX_RETRIES", "3"))
     max_concurrency: int = int(os.getenv("AISTUDIO_MAX_CONCURRENCY", "3"))
+    max_idle_browsers: int = int(os.getenv("AISTUDIO_MAX_IDLE_BROWSERS", "1"))
     default_text_model: str = os.getenv("AISTUDIO_DEFAULT_TEXT_MODEL", DEFAULT_TEXT_MODEL)
     default_image_model: str = os.getenv("AISTUDIO_DEFAULT_IMAGE_MODEL", DEFAULT_IMAGE_MODEL)
 

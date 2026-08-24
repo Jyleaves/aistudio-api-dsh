@@ -51,6 +51,7 @@ class SettingsPayload(BaseModel):
     account_cooldown_seconds: int | None = None
     account_max_retries: int | None = None
     max_concurrency: int | None = None
+    max_idle_browsers: int | None = None
     default_text_model: str | None = None
     default_image_model: str | None = None
 
@@ -83,6 +84,7 @@ _SETTINGS_FIELDS = {
     "account_cooldown_seconds": ("AISTUDIO_ACCOUNT_COOLDOWN_SECONDS", "int"),
     "account_max_retries": ("AISTUDIO_ACCOUNT_MAX_RETRIES", "int"),
     "max_concurrency": ("AISTUDIO_MAX_CONCURRENCY", "int"),
+    "max_idle_browsers": ("AISTUDIO_MAX_IDLE_BROWSERS", "int"),
     "default_text_model": ("AISTUDIO_DEFAULT_TEXT_MODEL", "str"),
     "default_image_model": ("AISTUDIO_DEFAULT_IMAGE_MODEL", "str"),
 }
@@ -146,6 +148,8 @@ async def save_settings(payload: SettingsPayload):
     for name in ("port", "browser_port", "timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
         if name in raw and raw[name] < 1:
             raise HTTPException(400, detail=f"{name} 必须大于 0")
+    if "max_idle_browsers" in raw and raw["max_idle_browsers"] < 0:
+        raise HTTPException(400, detail="max_idle_browsers 不能小于 0")
     try:
         _write_env_settings(raw)
         for field, value in raw.items():
@@ -240,14 +244,29 @@ async def update_status():
 
 
 @protected_router.post("/update")
-async def start_update():
+async def start_update(runtime_state=Depends(get_runtime_state)):
     from aistudio_api.infrastructure.update_service import update_service
 
     if getattr(sys, "frozen", False):
         try:
-            return await asyncio.to_thread(update_service.install)
+            result = await asyncio.to_thread(update_service.install)
         except RuntimeError as exc:
             raise HTTPException(409, detail=str(exc))
+        callback = getattr(runtime_state, "desktop_shutdown", None)
+        if callback is not None:
+            def close_after_response() -> None:
+                try:
+                    callback()
+                except Exception:
+                    import logging
+
+                    logging.getLogger("aistudio.server").exception("更新前关闭桌面应用失败")
+
+            # Give FastAPI enough time to flush the response, then use the
+            # normal desktop shutdown path so browser workers release their
+            # profiles before the installer replaces application files.
+            asyncio.get_running_loop().call_later(0.5, close_after_response)
+        return result
     from aistudio_api.config import PROJECT_ROOT, USER_DATA_ROOT, settings
 
     check = await asyncio.to_thread(_update_check_sync)
@@ -358,22 +377,26 @@ async def request_pool_status(runtime_state=Depends(get_runtime_state)):
         return {
             "enabled": False,
             "max_concurrency": 0,
+            "max_idle_browsers": 0,
             "active": 0,
             "workers": 0,
             "verified_workers": 0,
             "saturated": False,
             "ready_accounts": [],
+            "standby_accounts": [],
             "initializing_accounts": [],
             "failed_accounts": {},
         }
     return {
         "enabled": True,
         "max_concurrency": int(getattr(pool, "max_concurrency", 0)),
+        "max_idle_browsers": int(getattr(pool, "max_idle_browsers", 0)),
         "active": int(getattr(pool, "active_count", 0)),
         "workers": int(getattr(pool, "worker_count", 0)),
         "verified_workers": int(getattr(pool, "verified_worker_count", 0)),
         "saturated": bool(getattr(pool, "saturated", False)),
         "ready_accounts": sorted(getattr(pool, "ready_account_ids", set())),
+        "standby_accounts": sorted(getattr(pool, "standby_account_ids", set())),
         "initializing_accounts": sorted(getattr(pool, "initializing_account_ids", set())),
         "failed_accounts": dict(getattr(pool, "failed_account_errors", {})),
     }
