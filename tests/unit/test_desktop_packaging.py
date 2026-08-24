@@ -67,7 +67,11 @@ def test_frozen_desktop_runtime_keeps_the_pywebview_api():
     spec = (ROOT / "aistudio-api.spec").read_text(encoding="utf-8")
     build_script = (ROOT / "build-windows.ps1").read_text(encoding="utf-8")
     main = (ROOT / "src" / "aistudio_api" / "main.py").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
+    assert "pywebview>=6.2,<7" in requirements
+    assert "pywebview>=6.2,<7" in pyproject
     assert "collect_data_files('webview', include_py_files=True)" in spec
     assert "Start-Process -FilePath $packagedExe" in build_script
     assert '-ArgumentList "_packaging-smoke" -PassThru -WindowStyle Hidden' in build_script
