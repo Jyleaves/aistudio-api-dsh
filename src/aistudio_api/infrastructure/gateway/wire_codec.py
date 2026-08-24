@@ -263,11 +263,16 @@ class AistudioWireCodec:
             setattr(request.generation_config, attr, value)
         request.generation_config.enable_default_thinking()
 
-        # OpenAI chat compatibility should not inherit browser-side structured output
-        # or explicit reasoning settings from a previously captured AI Studio request.
+        # OpenAI chat compatibility should not inherit browser-side structured
+        # output or stale captured reasoning settings. Reapply an explicit API
+        # reasoning effort after sanitizing; otherwise use the highest default.
         if sanitize_plain_text and not model_defaults.is_image_model:
+            explicit_thinking_config = (generation_config_overrides or {}).get("thinking_config")
             request.generation_config.sanitize_for_plain_text()
-            request.generation_config.enable_default_thinking()
+            if explicit_thinking_config is not None:
+                request.generation_config.thinking_config = explicit_thinking_config
+            else:
+                request.generation_config.enable_default_thinking()
 
         if safety_off:
             request.safety_settings = [[None, None, cat, 5] for cat in [7, 8, 9, 10]]

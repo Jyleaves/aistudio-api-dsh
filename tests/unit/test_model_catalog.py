@@ -19,7 +19,18 @@ def test_model_metadata_exposes_dsh_capabilities():
     assert metadata["context_window"] == 1_000_000
     assert metadata["max_output_tokens"] == 65_536
     assert metadata["reasoning"] is True
+    assert metadata["reasoningEfforts"] == ["minimal", "low", "medium", "high"]
+    assert metadata["defaultReasoningEffort"] == "high"
+    assert metadata["reasoning_efforts"] == ["minimal", "low", "medium", "high"]
+    assert metadata["default_reasoning_effort"] == "high"
     assert metadata["inputModalities"] == ["text", "image"]
+
+
+def test_special_output_models_do_not_advertise_reasoning_efforts():
+    metadata = model_metadata("gemini-3.1-flash-image-preview")
+    assert metadata["reasoning"] is False
+    assert "reasoningEfforts" not in metadata
+    assert "defaultReasoningEffort" not in metadata
 
 
 def test_model_catalog_rejects_ai_studio_description_text():

@@ -1,7 +1,7 @@
 """HTTP request schemas."""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel
 from aistudio_api.config import DEFAULT_IMAGE_MODEL, DEFAULT_TEXT_MODEL
 
@@ -50,6 +50,7 @@ class ChatRequest(BaseModel):
     top_p: Optional[float] = None
     top_k: Optional[int] = None
     max_tokens: Optional[int] = None
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = None
     tools: Optional[list[OpenAITool]] = None
     stream_options: "StreamOptions | None" = None
 

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Advertise supported reasoning efforts and the default effort in OpenAI model
+  metadata for model-aware clients such as dsh.
+
+### Changed
+
+- Use the highest AI Studio thinking level when an OpenAI-compatible client
+  omits `reasoning_effort`.
+
+### Fixed
+
+- Accept `minimal`, `low`, `medium`, and `high` OpenAI reasoning efforts and
+  preserve the selected level through request sanitization and tool calls.
+
 ## [1.0.2] - 2026-08-24
 
 ### Added

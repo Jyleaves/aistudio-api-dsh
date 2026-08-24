@@ -242,6 +242,10 @@ class ModelCardResponse(BaseModel):
     context_length: int | None = None
     max_output_tokens: int | None = None
     max_tokens: int | None = None
+    reasoningEfforts: list[str] | None = None
+    defaultReasoningEffort: str | None = None
+    reasoning_efforts: list[str] | None = None
+    default_reasoning_effort: str | None = None
 
 
 class ModelListResponse(BaseModel):

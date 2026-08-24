@@ -274,6 +274,17 @@ def _normalize_gemini_thinking_config(value: Any) -> list[Any] | dict[str, Any]:
     return AistudioThinkingConfig(level=level, mode=int(raw_mode)).to_wire()
 
 
+def normalize_openai_reasoning_effort(value: str | None) -> list[Any] | None:
+    """Map OpenAI reasoning_effort to AI Studio's wire thinking level."""
+    if value is None:
+        return None
+    try:
+        level = ThinkingLevel[str(value).strip().upper()]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported reasoning_effort: {value}") from exc
+    return AistudioThinkingConfig(level=level, mode=1).to_wire()
+
+
 def _normalize_gemini_image_config(value: Any) -> dict[str, Any]:
     if value is None:
         return {}

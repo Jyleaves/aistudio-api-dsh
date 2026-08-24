@@ -25,7 +25,12 @@ from aistudio_api.application.api_service_common import (
     record_rotator_event,
     validate_image_request_options,
 )
-from aistudio_api.application.chat_service import cleanup_files, normalize_chat_request, normalize_openai_tools
+from aistudio_api.application.chat_service import (
+    cleanup_files,
+    normalize_chat_request,
+    normalize_openai_reasoning_effort,
+    normalize_openai_tools,
+)
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.config import settings
@@ -40,6 +45,10 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
     model = normalized["model"]
     tmp_files = list(normalized["cleanup_paths"])
     tools = None if req.tools is None else (normalize_openai_tools(req.tools) or [])
+    thinking_config = normalize_openai_reasoning_effort(req.reasoning_effort)
+    generation_config_overrides = (
+        {"thinking_config": thinking_config} if thinking_config is not None else None
+    )
 
     # Google AI Studio requires an additional wire-level tool_config flag when
     # built-in tools are combined with client-side function declarations.
@@ -71,6 +80,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
             top_p=req.top_p,
             top_k=req.top_k,
             max_tokens=req.max_tokens,
+            generation_config_overrides=generation_config_overrides,
             tools=tools,
         )
 
@@ -110,6 +120,7 @@ async def handle_chat(req: ChatRequest, client: AIStudioClient):
                         top_p=req.top_p,
                         top_k=req.top_k,
                         max_tokens=req.max_tokens,
+                        generation_config_overrides=generation_config_overrides,
                         tools=tools,
                         sanitize_plain_text=True,
                     )
@@ -320,6 +331,7 @@ def _build_streaming_response(
     top_p: float | None = None,
     top_k: int | None = None,
     max_tokens: int | None = None,
+    generation_config_overrides: dict | None = None,
     tools: list[list] | None = None,
 ) -> StreamingResponse:
     async def stream_response():
@@ -353,6 +365,7 @@ def _build_streaming_response(
                             top_p=top_p,
                             top_k=top_k,
                             max_tokens=max_tokens,
+                            generation_config_overrides=generation_config_overrides,
                             tools=tools,
                             force_refresh_capture=stream_attempt > 0,
                         ):

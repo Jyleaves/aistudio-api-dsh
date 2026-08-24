@@ -27,6 +27,7 @@ _MODEL_DESCRIPTION_WORDS = {
     "with", "and", "features", "directly", "ui", "check", "circle", "higher",
     "limits", "access", "all",
 }
+_REASONING_EFFORTS = ["minimal", "low", "medium", "high"]
 
 
 def normalize_gemini_model(value: object) -> str | None:
@@ -61,15 +62,24 @@ def model_metadata(model_id: str) -> dict[str, object]:
     display_name = " ".join(part.capitalize() for part in normalized.split("-"))
     context_window = 1_000_000
     max_tokens = 65_536
-    return {
+    supports_reasoning = not is_special_output
+    metadata = {
         "name": display_name,
         "display_name": display_name,
         "contextWindow": context_window,
         "maxTokens": max_tokens,
-        "reasoning": not is_special_output,
+        "reasoning": supports_reasoning,
         "inputModalities": ["text", "image"],
         "context_window": context_window,
         "context_length": context_window,
         "max_output_tokens": max_tokens,
         "max_tokens": max_tokens,
     }
+    if supports_reasoning:
+        metadata.update({
+            "reasoningEfforts": list(_REASONING_EFFORTS),
+            "defaultReasoningEffort": "high",
+            "reasoning_efforts": list(_REASONING_EFFORTS),
+            "default_reasoning_effort": "high",
+        })
+    return metadata

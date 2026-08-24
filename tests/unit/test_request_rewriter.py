@@ -134,6 +134,21 @@ def test_modify_body_enables_thinking_for_any_model():
     assert len(body[3]) <= 17 or body[3][17] is None
 
 
+def test_modify_body_preserves_explicit_reasoning_effort_when_sanitizing():
+    original = '["models/original",[[[[null,"old"]],"user"]],null,[null,null,null,128,0.5,0.8,16,"application/json"],"!snap",null,null]'
+    rewritten = modify_body(
+        original,
+        model="models/gemini-3.7-flash",
+        prompt="hello",
+        generation_config_overrides={"thinking_config": [1, None, None, 1]},
+        sanitize_plain_text=True,
+    )
+
+    body = json.loads(rewritten)
+    assert body[3][7] == "text/plain"
+    assert body[3][16] == [1, None, None, 1]
+
+
 def test_modify_body_can_override_image_output_resolution():
     original = json.dumps(
         [
