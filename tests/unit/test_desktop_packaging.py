@@ -63,6 +63,19 @@ def test_release_packaging_uses_brand_and_icon():
     assert "StringStruct('ProductVersion', project_version)" in spec
 
 
+def test_frozen_desktop_runtime_keeps_the_pywebview_api():
+    spec = (ROOT / "aistudio-api.spec").read_text(encoding="utf-8")
+    build_script = (ROOT / "build-windows.ps1").read_text(encoding="utf-8")
+    main = (ROOT / "src" / "aistudio_api" / "main.py").read_text(encoding="utf-8")
+
+    assert "collect_data_files('webview', include_py_files=True)" in spec
+    assert "Start-Process -FilePath $packagedExe" in build_script
+    assert "-Wait -PassThru -WindowStyle Hidden" in build_script
+    assert "$packagingSmoke.ExitCode" in build_script
+    assert "packaged pywebview is missing" in main
+    assert '("create_window", "start")' in main
+
+
 def test_release_artifact_name_and_version_are_consistent():
     installer = (ROOT / "installer.iss").read_text(encoding="utf-8")
     updater = (ROOT / "installer-update.iss").read_text(encoding="utf-8")

@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--camoufox-port", type=int, dest="browser_port", help=argparse.SUPPRESS)
 
     subparsers.add_parser("install-browser", help="下载后台浏览器（稳定版 Chromium，自动使用系统代理）")
+    subparsers.add_parser("_packaging-smoke", help=argparse.SUPPRESS)
 
     return parser
 
@@ -229,6 +230,14 @@ def main():
         from aistudio_api.config import settings
 
         _run_app(getattr(args, "port", None) or settings.port)
+        return
+
+    if args.command == "_packaging-smoke":
+        import webview
+
+        for api_name in ("create_window", "start"):
+            if not callable(getattr(webview, api_name, None)):
+                raise RuntimeError(f"packaged pywebview is missing {api_name}")
         return
 
     if args.command == "server":

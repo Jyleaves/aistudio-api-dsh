@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Package the complete pywebview module and run a frozen-runtime smoke check
+  before creating installers, preventing startup from importing an empty
+  `webview` namespace without `create_window`.
 - Keep the update action clickable after a successful update check when no
   error is present. The previous empty-string state could still emit an HTML
   `disabled` attribute.

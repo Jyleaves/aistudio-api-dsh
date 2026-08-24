@@ -37,7 +37,11 @@ windows_version_info = VSVersionInfo(
 datas = [('src/aistudio_api/static', 'aistudio_api/static'), ('config.yaml', '.')]
 binaries = []
 hiddenimports = ['webview.platforms.edgechromium', 'webview.platforms.winforms', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl', 'uvicorn.lifespan.on']
-datas += collect_data_files('webview')
+# pywebview keeps runtime JS and native libraries beside its Python package.
+# Include the Python files physically as well: a data-only ``webview`` folder
+# can otherwise be imported as an empty namespace package in a frozen build,
+# hiding the real module and its create_window API.
+datas += collect_data_files('webview', include_py_files=True)
 tmp_ret = collect_all('playwright')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('curl_cffi')

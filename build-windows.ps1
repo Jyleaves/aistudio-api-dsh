@@ -50,6 +50,13 @@ try {
     & $python -m PyInstaller --noconfirm --clean aistudio-api.spec
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
+    # Exercise imports from the frozen executable before creating installers.
+    # Unit tests run from source and cannot detect a namespace-package shadow
+    # inside PyInstaller's on-disk layout.
+    $packagedExe = Join-Path $root "dist\Asteria\Asteria.exe"
+    $packagingSmoke = Start-Process -FilePath $packagedExe -ArgumentList "_packaging-smoke" -Wait -PassThru -WindowStyle Hidden
+    if ($packagingSmoke.ExitCode -ne 0) { throw "Packaged desktop runtime smoke test failed with exit code $($packagingSmoke.ExitCode)" }
+
     if (-not $UpdateOnly) {
         # Ship the pinned CloakBrowser runtime exactly as supplied. Google login
         # compatibility depends on this browser build, so never substitute a
