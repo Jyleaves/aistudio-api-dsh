@@ -3,9 +3,19 @@ import pytest
 from aistudio_api.api.schemas import GeminiContent, GeminiGenerateContentRequest, GeminiGenerationConfig, GeminiPart
 import tempfile
 
-from aistudio_api.application.chat_service import normalize_gemini_request, normalize_openai_tools
+from aistudio_api.application.chat_service import inline_data_to_file, normalize_gemini_request, normalize_openai_tools
 from aistudio_api.api.schemas import ChatRequest
 from aistudio_api.infrastructure.gateway.wire_types import AistudioImageOutputMode
+
+
+def test_inline_data_to_file_creates_missing_tmp_directory(tmp_path):
+    tmp_dir = tmp_path / "missing" / "nested"
+
+    image_path = inline_data_to_file("image/png", "UE5H", tmp_dir=str(tmp_dir))
+
+    assert tmp_dir.is_dir()
+    with open(image_path, "rb") as image_file:
+        assert image_file.read() == b"PNG"
 
 
 def test_normalize_gemini_request_exposes_generation_config_overrides():

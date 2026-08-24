@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Accept `minimal`, `low`, `medium`, and `high` OpenAI reasoning efforts and
   preserve the selected level through request sanitization and tool calls.
+- Create the configured temporary directory before decoding Gemini inline
+  images, preventing first-run image requests from failing with HTTP 500 after
+  the temporary directory has been cleaned.
 
 ## [1.0.2] - 2026-08-24
 

@@ -178,6 +178,7 @@ def cleanup_files(paths: list[str]):
 
 def inline_data_to_file(mime_type: str, data: str, tmp_dir: str = "/tmp") -> str:
     ext = mime_type.split("/")[-1].replace("jpeg", "jpg")
+    os.makedirs(tmp_dir, exist_ok=True)
     path = os.path.join(tmp_dir, f"aistudio_img_{uuid.uuid4().hex[:8]}.{ext}")
     with open(path, "wb") as file:
         file.write(base64.b64decode(data))
