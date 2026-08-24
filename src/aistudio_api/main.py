@@ -107,13 +107,14 @@ def _run_install_browser() -> int:
 def _run_app(port: int) -> None:
     """桌面应用模式：后台启动 API 服务，原生窗口内嵌管理页面。"""
     import logging
+    import os
     import socket
     import threading
 
     # 打包版无控制台，日志落盘方便排查
-    from aistudio_api.config import PROJECT_ROOT
+    from aistudio_api.config import USER_DATA_ROOT
 
-    log_dir = PROJECT_ROOT / "data"
+    log_dir = USER_DATA_ROOT / "data"
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -123,16 +124,51 @@ def _run_app(port: int) -> None:
         force=True,
     )
 
+    # A desktop instance owns the local API port and its browser session.
+    # Starting a second copy on a random fallback port makes the visible UI
+    # talk to a different, partially initialized server. Keep a process-wide
+    # Windows lock so the second copy exits cleanly instead.
+    instance_lock = None
+    try:
+        lock_path = log_dir / "Asteria.instance.lock"
+        instance_lock = open(lock_path, "a+b")
+        if os.name == "nt":
+            import msvcrt
+
+            instance_lock.seek(0)
+            try:
+                msvcrt.locking(instance_lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                logging.getLogger("aistudio.server").warning("已有 Asteria 实例正在运行，当前实例退出")
+                instance_lock.close()
+                return
+        logging.getLogger("aistudio.server").info("Asteria 单实例锁已取得")
+    except Exception:
+        if instance_lock is not None:
+            instance_lock.close()
+        raise
+
     def _pick_port(preferred: int) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.bind(("127.0.0.1", preferred))
                 return preferred
             except OSError:
-                sock.bind(("127.0.0.1", 0))
-                return int(sock.getsockname()[1])
+                raise RuntimeError(f"Asteria 端口 {preferred} 已被占用，请关闭已有实例后重试")
 
-    actual_port = _pick_port(port)
+    try:
+        actual_port = _pick_port(port)
+    except Exception:
+        if instance_lock is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    instance_lock.seek(0)
+                    msvcrt.locking(instance_lock.fileno(), msvcrt.LK_UNLCK, 1)
+            finally:
+                instance_lock.close()
+        raise
 
     import uvicorn
 
@@ -161,11 +197,28 @@ def _run_app(port: int) -> None:
         height=840,
         min_size=(960, 640),
     )
+    from aistudio_api.api.state import runtime_state
+
+    runtime_state.desktop_shutdown = window.destroy
     try:
         webview.start()
     finally:
+        runtime_state.desktop_shutdown = None
         server.should_exit = True
-        thread.join(timeout=10)
+        # FastAPI lifespan 会在这里取消登录任务并关闭后台浏览器。给 Chromium
+        # 足够时间释放 Windows profile 文件锁，再解除单实例锁并退出进程。
+        thread.join(timeout=30)
+        if thread.is_alive():
+            logging.getLogger("aistudio").error("应用关闭超时：本地服务线程仍未退出")
+        if instance_lock is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    instance_lock.seek(0)
+                    msvcrt.locking(instance_lock.fileno(), msvcrt.LK_UNLCK, 1)
+            finally:
+                instance_lock.close()
 
 
 def main():

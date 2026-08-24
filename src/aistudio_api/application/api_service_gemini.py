@@ -13,11 +13,10 @@ from aistudio_api.api.schemas import GeminiGenerateContentRequest
 from aistudio_api.api.state import runtime_state
 from aistudio_api.application.api_service_common import (
     MAX_RETRIES,
-    ensure_active_account,
+    acquire_request_client,
     logger,
+    mark_request_worker_unhealthy,
     record_rotator_event,
-    require_busy_lock,
-    try_switch_account,
 )
 from aistudio_api.application.chat_service import cleanup_files, normalize_gemini_request
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
@@ -32,105 +31,152 @@ async def handle_gemini_generate_content(
     *,
     stream: bool,
 ):
-    busy_lock = require_busy_lock()
     last_error = None
+    attempted_accounts: set[str] = set()
+    try:
+        normalized = normalize_gemini_request(req, model_path, tmp_dir=settings.tmp_dir)
+    except ValueError as exc:
+        raise HTTPException(400, detail={"message": str(exc), "type": "bad_request"}) from exc
 
-    for attempt in range(MAX_RETRIES):
-        async with busy_lock:
-            await ensure_active_account(attempt)
-            normalized = None
-            try:
-                normalized = normalize_gemini_request(req, model_path, tmp_dir=settings.tmp_dir)
-                logger.info(
-                    "Gemini: model=%s, contents=%s, stream=%s, attempt=%d",
-                    normalized["model"],
-                    len(req.contents),
-                    stream,
-                    attempt + 1,
-                )
+    if stream:
+        return _build_gemini_streaming_response(client=client, normalized=normalized)
 
-                if stream:
-                    return _build_gemini_streaming_response(client=client, normalized=normalized)
+    try:
+        for attempt in range(MAX_RETRIES):
+            async with acquire_request_client(
+                client,
+                attempt=attempt,
+                exclude_account_ids=attempted_accounts,
+            ) as execution:
+                request_client = execution.client
+                account_id = execution.account_id
+                if account_id:
+                    attempted_accounts.add(account_id)
+                try:
+                    logger.info(
+                        "Gemini: model=%s, contents=%s, stream=%s, attempt=%d, worker=%s",
+                        normalized["model"],
+                        len(req.contents),
+                        stream,
+                        attempt + 1,
+                        execution.worker_id,
+                    )
+                    output = await request_client.generate_content(
+                        model=normalized["model"],
+                        capture_prompt=normalized["capture_prompt"],
+                        capture_images=normalized["capture_images"],
+                        contents=normalized["contents"],
+                        system_instruction_content=normalized["system_instruction"],
+                        tools=normalized["tools"],
+                        safety_settings=normalized["safety_settings"],
+                        temperature=normalized["temperature"],
+                        top_p=normalized["top_p"],
+                        top_k=normalized["top_k"],
+                        max_tokens=normalized["max_tokens"],
+                        generation_config_overrides=normalized["generation_config_overrides"],
+                        sanitize_plain_text=False,
+                    )
 
-                output = await client.generate_content(
-                    model=normalized["model"],
-                    capture_prompt=normalized["capture_prompt"],
-                    capture_images=normalized["capture_images"],
-                    contents=normalized["contents"],
-                    system_instruction_content=normalized["system_instruction"],
-                    tools=normalized["tools"],
-                    safety_settings=normalized["safety_settings"],
-                    temperature=normalized["temperature"],
-                    top_p=normalized["top_p"],
-                    top_k=normalized["top_k"],
-                    max_tokens=normalized["max_tokens"],
-                    generation_config_overrides=normalized["generation_config_overrides"],
-                    sanitize_plain_text=False,
-                )
-
-                record_rotator_event("success")
-                runtime_state.record(normalized["model"], "success", output.usage)
-                return GeminiGenerateContentResponse(
-                    candidates=[
-                        GeminiCandidateResponse(
-                            content=GeminiContentResponse(
-                                parts=to_gemini_parts(
-                                    output.text,
-                                    function_calls=output.function_calls,
-                                    function_responses=output.function_responses,
-                                    thinking=output.thinking,
-                                    images=output.images,
-                                    reasoning_images=output.reasoning_images,
+                    execution.succeeded = True
+                    record_rotator_event("success", account_id)
+                    runtime_state.record(normalized["model"], "success", output.usage)
+                    return GeminiGenerateContentResponse(
+                        candidates=[
+                            GeminiCandidateResponse(
+                                content=GeminiContentResponse(
+                                    parts=to_gemini_parts(
+                                        output.text,
+                                        function_calls=output.function_calls,
+                                        function_responses=output.function_responses,
+                                        thinking=output.thinking,
+                                        images=output.images,
+                                        reasoning_images=output.reasoning_images,
+                                    ),
                                 ),
-                            ),
-                            finishReason="STOP" if not output.function_calls else "FUNCTION_CALL",
-                        )
-                    ],
-                    usageMetadata=to_gemini_usage_metadata(output.usage),
-                )
-            except ValueError as exc:
-                raise HTTPException(400, detail={"message": str(exc), "type": "bad_request"}) from exc
-            except UsageLimitExceeded as exc:
-                runtime_state.record(model_path, "rate_limited")
-                last_error = exc
+                                finishReason="STOP" if not output.function_calls else "FUNCTION_CALL",
+                            )
+                        ],
+                        usageMetadata=to_gemini_usage_metadata(output.usage),
+                    )
+                except UsageLimitExceeded as exc:
+                    runtime_state.record(model_path, "rate_limited")
+                    last_error = exc
+                    record_rotator_event("rate_limited", account_id)
+                    if attempt < MAX_RETRIES - 1:
+                        logger.info("Gemini 429 限流，改用其他可用账号重试 %d/%d", attempt + 1, MAX_RETRIES)
+                        continue
+                    raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+                except AuthError as exc:
+                    last_error = exc
+                    mark_request_worker_unhealthy(execution.worker_id)
+                    if attempt < MAX_RETRIES - 1:
+                        logger.warning("Gemini 工作浏览器鉴权失败，重建后重试 %d/%d", attempt + 1, MAX_RETRIES)
+                        continue
+                    runtime_state.record(model_path, "errors")
+                    record_rotator_event("error", account_id)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
+                except AistudioError as exc:
+                    runtime_state.record(model_path, "errors")
+                    record_rotator_event("error", account_id)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
+                except Exception as exc:
+                    runtime_state.record(model_path, "errors")
+                    record_rotator_event("error", account_id)
+                    logger.error("Gemini error: %s", exc, exc_info=True)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
+        raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+    finally:
+        cleanup_files(normalized["cleanup_paths"])
 
-                record_rotator_event("rate_limited")
-                if await try_switch_account():
-                    logger.info("Gemini 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
-                    continue
-                logger.warning("Gemini 429 限流，无法切换账号")
-                raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
-            except AistudioError as exc:
-                runtime_state.record(model_path, "errors")
-                record_rotator_event("error")
-                raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
-            except Exception as exc:
-                runtime_state.record(model_path, "errors")
-                record_rotator_event("error")
-                logger.error("Gemini error: %s", exc, exc_info=True)
-                raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
-            finally:
-                if normalized is not None and not stream:
-                    cleanup_files(normalized["cleanup_paths"])
 
-    raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+def _gemini_stream_payload(event_type: str, value) -> str | None:
+    parts = None
+    if event_type == "body" and value:
+        parts = [{"text": value}]
+    elif event_type == "images" and value:
+        parts = [part.model_dump(mode="json", exclude_none=True) for part in to_gemini_parts("", images=value)]
+    elif event_type == "reasoning_images" and value:
+        parts = [
+            part.model_dump(mode="json", exclude_none=True)
+            for part in to_gemini_parts("", reasoning_images=value)
+        ]
+    elif event_type == "tool_calls" and value:
+        parts = [
+            part.model_dump(mode="json", exclude_none=True)
+            for part in to_gemini_parts("", function_calls=value)
+        ]
+    elif event_type == "thinking" and value:
+        parts = [{"text": value, "thought": True}]
+    if parts is None:
+        return None
+    payload = {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": parts},
+                "finishReason": None,
+            }
+        ]
+    }
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
 def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict) -> StreamingResponse:
     async def stream_response():
-        busy_lock = runtime_state.busy_lock
-        if busy_lock is None:
-            yield "data: " + json.dumps({"error": {"message": "Server not ready"}}, ensure_ascii=False) + "\n\n"
-            cleanup_files(normalized["cleanup_paths"])
-            return
-
-        async with busy_lock:
-            try:
-                final_usage = None
-                for stream_attempt in range(MAX_RETRIES):
+        final_usage = None
+        account_id = None
+        attempted_accounts: set[str] = set()
+        try:
+            for stream_attempt in range(MAX_RETRIES):
+                async with acquire_request_client(
+                    client,
+                    attempt=stream_attempt,
+                    exclude_account_ids=attempted_accounts,
+                ) as execution:
+                    stream_client = execution.client
+                    account_id = execution.account_id
                     try:
                         has_yielded_data = False
-                        async for event_type, text in client.stream_generate_content(
+                        async for event_type, value in stream_client.stream_generate_content(
                             model=normalized["model"],
                             capture_prompt=normalized["capture_prompt"],
                             capture_images=normalized["capture_images"],
@@ -146,130 +192,61 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                             sanitize_plain_text=False,
                             force_refresh_capture=stream_attempt > 0,
                         ):
-                            has_yielded_data = True
-                            if event_type == "body" and text:
-                                yield "data: " + json.dumps(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {"role": "model", "parts": [{"text": text}]},
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
-                            elif event_type == "images" and text:
-                                yield "data: " + json.dumps(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {
-                                                    "role": "model",
-                                                    "parts": [
-                                                        part.model_dump(mode="json", exclude_none=True)
-                                                        for part in to_gemini_parts("", images=text)
-                                                    ],
-                                                },
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
-                            elif event_type == "reasoning_images" and text:
-                                yield "data: " + json.dumps(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {
-                                                    "role": "model",
-                                                    "parts": [
-                                                        part.model_dump(mode="json", exclude_none=True)
-                                                        for part in to_gemini_parts("", reasoning_images=text)
-                                                    ],
-                                                },
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
-                            elif event_type == "tool_calls" and text:
-                                yield "data: " + json.dumps(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {
-                                                    "role": "model",
-                                                    "parts": [
-                                                        part.model_dump(mode="json", exclude_none=True)
-                                                        for part in to_gemini_parts("", function_calls=text)
-                                                    ],
-                                                },
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
-                            elif event_type == "thinking" and text:
-                                yield "data: " + json.dumps(
-                                    {
-                                        "candidates": [
-                                            {
-                                                "content": {
-                                                    "role": "model",
-                                                    "parts": [{"text": text, "thought": True}],
-                                                },
-                                                "finishReason": None,
-                                            }
-                                        ]
-                                    },
-                                    ensure_ascii=False,
-                                ) + "\n\n"
-                            elif event_type == "usage":
-                                final_usage = text if isinstance(text, dict) else None
+                            if event_type == "usage":
+                                final_usage = value if isinstance(value, dict) else None
+                                continue
+                            payload = _gemini_stream_payload(event_type, value)
+                            if payload is not None:
+                                has_yielded_data = True
+                                yield payload
                         break
                     except UsageLimitExceeded:
                         runtime_state.record(normalized["model"], "rate_limited")
-                        record_rotator_event("rate_limited")
-                        if not has_yielded_data and await try_switch_account():
-                            logger.warning("Gemini stream 429 限流，已切换账号，重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
+                        record_rotator_event("rate_limited", account_id)
+                        if account_id:
+                            attempted_accounts.add(account_id)
+                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1:
+                            logger.warning(
+                                "Gemini stream 429 限流，改用其他可用账号重试 %d/%d",
+                                stream_attempt + 1,
+                                MAX_RETRIES,
+                            )
                             continue
                         raise
                     except RequestError as exc:
                         if exc.status == 204 and stream_attempt == 0:
                             logger.warning("Gemini stream 收到 204，清理 snapshot 缓存后重试一次")
-                            client.clear_snapshot_cache()
+                            stream_client.clear_snapshot_cache()
                             continue
                         raise
                     except AuthError as exc:
-                        if stream_attempt == 0:
-                            logger.warning("Gemini stream 鉴权异常，清理 snapshot 缓存后重试一次: %s", exc)
-                            client.clear_snapshot_cache()
+                        mark_request_worker_unhealthy(execution.worker_id)
+                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1:
+                            logger.warning("Gemini stream 工作浏览器鉴权异常，重建后重试 %d/%d: %s", stream_attempt + 1, MAX_RETRIES, exc)
+                            stream_client.clear_snapshot_cache()
                             continue
                         raise
 
-                record_rotator_event("success")
-                runtime_state.record(normalized["model"], "success", final_usage)
-                if final_usage:
-                    yield "data: " + json.dumps(
-                        {
-                            "candidates": [],
-                            "usageMetadata": to_gemini_usage_metadata(final_usage).model_dump(mode="json"),
-                        },
-                        ensure_ascii=False,
-                    ) + "\n\n"
-                yield "data: [DONE]\n\n"
-            except Exception as exc:
-                logger.error("Gemini stream error: %s", exc, exc_info=True)
-                if not isinstance(exc, UsageLimitExceeded):
-                    record_rotator_event("error")
-                runtime_state.record(normalized["model"], "errors")
-                yield "data: " + json.dumps({"error": {"message": str(exc)}}, ensure_ascii=False) + "\n\n"
-            finally:
-                cleanup_files(normalized["cleanup_paths"])
+            execution.succeeded = True
+            record_rotator_event("success", account_id)
+            runtime_state.record(normalized["model"], "success", final_usage)
+            if final_usage:
+                yield "data: " + json.dumps(
+                    {
+                        "candidates": [],
+                        "usageMetadata": to_gemini_usage_metadata(final_usage).model_dump(mode="json"),
+                    },
+                    ensure_ascii=False,
+                ) + "\n\n"
+            yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("Gemini stream error: %s", exc, exc_info=True)
+            if not isinstance(exc, UsageLimitExceeded):
+                record_rotator_event("error", account_id)
+            runtime_state.record(normalized["model"], "errors")
+            yield "data: " + json.dumps({"error": {"message": str(exc)}}, ensure_ascii=False) + "\n\n"
+        finally:
+            cleanup_files(normalized["cleanup_paths"])
 
     return StreamingResponse(
         stream_response(),

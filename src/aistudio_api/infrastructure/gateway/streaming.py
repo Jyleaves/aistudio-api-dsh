@@ -105,6 +105,17 @@ class StreamingGateway:
             generation_config_overrides=generation_config_overrides,
             sanitize_plain_text=sanitize_plain_text,
         )
+        try:
+            logger.info(
+                "[probe] request.wire_model requested=%s encoded=%s stream=true",
+                model,
+                json.loads(modified_body)[0],
+            )
+        except (json.JSONDecodeError, IndexError, TypeError):
+            logger.warning(
+                "[probe] request.wire_model unreadable requested=%s stream=true",
+                model,
+            )
 
         parser = IncrementalJSONStreamParser()
         latest_usage: dict | None = None

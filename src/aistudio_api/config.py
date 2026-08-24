@@ -11,9 +11,19 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+
+def _user_data_root() -> Path:
+    local_appdata = os.getenv("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "Asteria"
+    return Path.home() / ".asteria"
+
+
+USER_DATA_ROOT = _user_data_root()
+
 def ensure_env_file() -> None:
     """Create a minimal local .env on first startup without creating a secret."""
-    env_path = PROJECT_ROOT / ".env"
+    env_path = USER_DATA_ROOT / ".env"
     if env_path.exists():
         return
     content = (
@@ -21,6 +31,7 @@ def ensure_env_file() -> None:
         "# Runtime settings are managed from the web UI.\n"
     )
     try:
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text(content, encoding="utf-8")
     except OSError:
         # Read-only deployments can still run with environment defaults.
@@ -29,15 +40,15 @@ def ensure_env_file() -> None:
 
 # Make first-run configuration self-contained. Never generate an API secret here.
 ensure_env_file()
-load_dotenv()
+load_dotenv(USER_DATA_ROOT / ".env")
 
 
 def _repair_moved_project_paths() -> None:
     """Rebase stale absolute paths left by moving or renaming the checkout."""
     candidates = {
         "AISTUDIO_BROWSER_EXECUTABLE": PROJECT_ROOT / "cloakbrowser-chromium" / "chrome.exe",
-        "AISTUDIO_ACCOUNTS_DIR": PROJECT_ROOT / "data" / "accounts",
-        "AISTUDIO_TMP_DIR": PROJECT_ROOT / "data" / "tmp",
+        "AISTUDIO_ACCOUNTS_DIR": USER_DATA_ROOT / "data" / "accounts",
+        "AISTUDIO_TMP_DIR": USER_DATA_ROOT / "data" / "tmp",
         "CLOAKBROWSER_BINARY_PATH": PROJECT_ROOT / "cloakbrowser-chromium" / "chrome.exe",
     }
     browser_path = candidates["AISTUDIO_BROWSER_EXECUTABLE"]
@@ -70,6 +81,14 @@ def resolve_project_path(value: str | None, default: str) -> str:
         candidate = PROJECT_ROOT / candidate
     return str(candidate.resolve())
 
+
+def resolve_runtime_path(value: str | None, default: str) -> str:
+    """Resolve writable runtime paths under the per-user Asteria data root."""
+    candidate = Path(value or default).expanduser()
+    if not candidate.is_absolute():
+        candidate = USER_DATA_ROOT / candidate
+    return str(candidate.resolve())
+
 DEFAULT_TEXT_MODEL = os.getenv("AISTUDIO_DEFAULT_TEXT_MODEL", "gemini-3.7-flash")
 DEFAULT_IMAGE_MODEL = os.getenv("AISTUDIO_DEFAULT_IMAGE_MODEL", "gemini-3.1-flash-image-preview")
 DEFAULT_BROWSER_PORT = 9222
@@ -94,13 +113,14 @@ def _load_login_browser() -> str:
     """Pick which browser the interactive Google login window uses.
 
     Supported values:
-    - auto: system Chrome/Edge first, cloakbrowser fallback (default)
+    - chromium: use the Playwright Chromium bundled with the desktop app (default)
+    - auto: system Chrome/Edge first, retained for existing configurations
     - system: system Chrome/Edge only
     - cloakbrowser: stealth Chromium via cloakbrowser
     """
-    value = (os.getenv("AISTUDIO_LOGIN_BROWSER", "auto") or "auto").strip().lower()
-    if value not in {"auto", "system", "cloakbrowser"}:
-        return "auto"
+    value = (os.getenv("AISTUDIO_LOGIN_BROWSER", "chromium") or "chromium").strip().lower()
+    if value not in {"auto", "chromium", "system", "cloakbrowser"}:
+        return "chromium"
     return value
 
 
@@ -156,14 +176,14 @@ def _default_chromium_sandbox() -> bool:
     return os.name != "posix" or os.uname().sysname != "Linux"
 
 _AUTH_SEARCH_ROOTS = [
-    PROJECT_ROOT / "data",  # 项目内 data/ 目录
+        USER_DATA_ROOT / "data",
 ]
 
 
 def discover_auth_file() -> str | None:
     override = os.getenv("AISTUDIO_AUTH_FILE")
     if override:
-        return resolve_project_path(override, "data/auth.json")
+        return resolve_runtime_path(override, "data/auth.json")
 
     for root in _AUTH_SEARCH_ROOTS:
         if not root.is_dir():
@@ -241,14 +261,14 @@ class Settings:
     browser_python: str | None = _load_env("AISTUDIO_BROWSER_PYTHON", "AISTUDIO_CAMOUFOX_PYTHON")
     login_browser: str = _load_login_browser()
     login_browser_channel: str | None = os.getenv("AISTUDIO_LOGIN_BROWSER_CHANNEL") or None
-    login_profile_dir: str = resolve_project_path(
+    login_profile_dir: str = resolve_runtime_path(
         os.getenv("AISTUDIO_LOGIN_PROFILE_DIR"), "data/login-profile"
     )
     auth_file: str | None = discover_auth_file()
-    tmp_dir: str = resolve_project_path(os.getenv("AISTUDIO_TMP_DIR"), "data/tmp")
+    tmp_dir: str = resolve_runtime_path(os.getenv("AISTUDIO_TMP_DIR"), "data/tmp")
     proxy_url: str | None = discover_proxy_url()
     api_keys: frozenset[str] = _load_api_keys()
-    api_key_store_path: str = resolve_project_path(
+    api_key_store_path: str = resolve_runtime_path(
         os.getenv("AISTUDIO_API_KEY_STORE"), "data/api_keys.json"
     )
     local_ui_auto_login: bool = _load_bool_env(
@@ -260,10 +280,10 @@ class Settings:
     snapshot_cache_ttl: int = int(os.getenv("AISTUDIO_SNAPSHOT_CACHE_TTL", "3600"))
     snapshot_cache_max: int = int(os.getenv("AISTUDIO_SNAPSHOT_CACHE_MAX", "100"))
     dump_raw_response: bool = os.getenv("AISTUDIO_DUMP_RAW_RESPONSE", "0") in ("1", "true", "True")
-    dump_raw_response_dir: str = resolve_project_path(
+    dump_raw_response_dir: str = resolve_runtime_path(
         os.getenv("AISTUDIO_DUMP_RAW_RESPONSE_DIR"), "data/raw"
     )
-    accounts_dir: str = resolve_project_path(
+    accounts_dir: str = resolve_runtime_path(
         os.getenv("AISTUDIO_ACCOUNTS_DIR"), "data/accounts"
     )
     # 账号轮询配置

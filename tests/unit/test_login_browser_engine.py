@@ -170,6 +170,22 @@ def test_launch_login_context_uses_system_browser_with_persistent_profile(monkey
     assert "proxy" not in options
 
 
+def test_launch_login_context_uses_bundled_playwright_chromium(monkeypatch, tmp_path):
+    pw = FakePlaywright(FakeChromiumLauncher())
+    _patch_async_playwright(monkeypatch, pw)
+    monkeypatch.setattr(engine.settings, "login_browser", "chromium")
+    monkeypatch.setattr(engine, "_find_playwright_chromium", lambda: r"C:\Asteria\playwright-browsers\chrome.exe")
+    monkeypatch.setattr(engine.settings, "proxy_url", None)
+
+    handle = asyncio.run(
+        async_launch_login_context(headless=False, profile_dir=str(tmp_path / "p"))
+    )
+
+    assert handle.backend == "playwright:chromium"
+    assert pw.chromium.launch_options["executable_path"] == r"C:\Asteria\playwright-browsers\chrome.exe"
+    assert "channel" not in pw.chromium.launch_options
+
+
 def test_launch_login_context_falls_back_to_other_system_browser(monkeypatch, tmp_path):
     # 模拟 Edge（默认浏览器）被后台进程占用启动失败，自动降级 Chrome
     attempts: list[str] = []

@@ -1,4 +1,6 @@
 import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 from aistudio_api.api.schemas import ChatRequest
 from aistudio_api.application.api_service import handle_chat
@@ -20,14 +22,15 @@ class _CaptureChatClient:
         return _Output()
 
 
+@asynccontextmanager
+async def _lease_test_client(client, **_kwargs):
+    yield SimpleNamespace(client=client, account_id=None, worker_id="test")
+
+
 def test_handle_chat_empty_tools_disables_model_defaults(monkeypatch):
     from aistudio_api.application import api_service_openai
 
-    async def _noop(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(api_service_openai, "require_busy_lock", lambda: asyncio.Semaphore(1))
-    monkeypatch.setattr(api_service_openai, "ensure_active_account", _noop)
+    monkeypatch.setattr(api_service_openai, "acquire_request_client", _lease_test_client)
     monkeypatch.setattr(api_service_openai, "record_rotator_event", lambda *args, **kwargs: None)
 
     client = _CaptureChatClient()
@@ -41,6 +44,38 @@ def test_handle_chat_empty_tools_disables_model_defaults(monkeypatch):
 
     assert len(client.calls) == 1
     assert client.calls[0]["kwargs"]["tools"] == []
+
+
+def test_handle_chat_retries_small_budget_empty_reasoning_once(monkeypatch):
+    from aistudio_api.application import api_service_openai
+
+    monkeypatch.setattr(api_service_openai, "acquire_request_client", _lease_test_client)
+    monkeypatch.setattr(api_service_openai, "record_rotator_event", lambda *args, **kwargs: None)
+
+    class Client:
+        def __init__(self):
+            self.max_tokens = []
+
+        async def generate_content(self, **kwargs):
+            self.max_tokens.append(kwargs["max_tokens"])
+            return SimpleNamespace(
+                text="" if len(self.max_tokens) == 1 else "visible",
+                thinking="hidden" if len(self.max_tokens) == 1 else "",
+                usage={},
+                function_calls=[],
+            )
+
+    client = Client()
+    request = ChatRequest(
+        model="gemini-3.7-flash",
+        messages=[{"role": "user", "content": "hello"}],
+        max_tokens=64,
+    )
+
+    response = asyncio.run(handle_chat(request, client))
+
+    assert response.choices[0].message.content == "visible"
+    assert client.max_tokens == [64, 512]
 
 
 def test_normalize_chat_request_tool_calls_and_responses():

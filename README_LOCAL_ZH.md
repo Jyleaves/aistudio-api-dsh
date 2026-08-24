@@ -1,29 +1,13 @@
-# Windows 本地部署说明
+# Asteria Windows 安装说明
 
-完整安装步骤、dsh 字段填写和模型配置见项目根目录的 [README.md](README.md)。
+无需安装 Python，也无需克隆仓库。
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m playwright install chromium
-```
+1. 前往 [GitHub Releases](https://github.com/Jyleaves/aistudio-api-dsh/releases) 下载最新安装包。
+2. 双击 `Asteria-setup-*.exe`，选择安装目录并完成安装。
+3. 启动 Asteria，在“账号管理”中登录 Google 账号。
+4. 等待账号状态变为“正常”或“待命”，然后在“API Key 管理”中创建密钥。
+5. 打开“接入指南”，选择 OpenAI、Gemini 或 Anthropic 协议并复制对应配置。
 
-双击 `start-aistudio-api.bat` 启动，访问 `http://127.0.0.1:8090`：在“API Key 管理”创建 Key，点击“添加账号”完成 Google 登录。
+应用更新可在 Asteria 左下角的“更新”页面完成。账号和设置会保留，普通更新无需重复安装内置浏览器。
 
-dsh 插件安装并重启 dsh：
-
-```powershell
-dsh plugin --profile web add https://github.com/Jyleaves/dsh-gemini-aistudio.git
-```
-
-更新：`update-aistudio-api.ps1 -Restart`（反代）、`update-dsh-gemini-aistudio.ps1`（插件）。
-
-## Windows v1.0.0 安装包
-
-本地构建需要 Python 虚拟环境、PyInstaller 和 Inno Setup 7：
-
-```powershell
-.\build-windows.ps1
-```
-
-产物为 `dist\Asteria-setup-1.0.0.exe`。安装器支持选择安装目录，安装完成后可从桌面或开始菜单双击启动；管理网页会直接显示在应用窗口中，不需要手动打开浏览器或运行 Python。安装包内置浏览器组件，支持离线安装，当前安装包约 187 MB。推送 `v1.0.0` 标签后，GitHub Actions 会自动构建并将安装包上传到 Release。
+遇到请求无响应时，先确认账号状态可用，再到“接入指南”核对地址、模型与 API Key。

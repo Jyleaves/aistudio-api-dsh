@@ -2,16 +2,64 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from aistudio_api.api.dependencies import get_account_service, get_runtime_state, get_runtime_state
-from aistudio_api.infrastructure.account.cookie_parser import parse_cookie_string
+from aistudio_api.api.dependencies import get_account_service, get_runtime_state
+from aistudio_api.api.state import runtime_state
+from aistudio_api.domain.errors import AuthError
 import logging
 
 log = logging.getLogger("aistudio.routes_accounts")
 
 router = APIRouter(prefix="/accounts")
+
+
+class _PooledActivationSession:
+    """Make account activation prepare the same browser used by API traffic."""
+
+    def __init__(self, control_session, request_pool, account_id: str) -> None:
+        self._control_session = control_session
+        self._request_pool = request_pool
+        self._account_id = account_id
+
+    async def switch_auth(self, auth_path: str | None) -> None:
+        # Keep the legacy control client pointed at the selected account, but
+        # leave it closed. Running it beside a request worker gives one Google
+        # account two competing desktop sessions and can make valid requests
+        # fail with "The caller does not have permission".
+        if self._control_session is not None:
+            await self._control_session.switch_auth(auth_path)
+
+    async def ensure_context(self) -> None:
+        await self._request_pool.prepare_account(self._account_id)
+
+
+async def activate_runtime_account(
+    account_service,
+    runtime,
+    account_id: str,
+    *,
+    busy_lock=None,
+):
+    """Activate and verify an account through the real request execution path."""
+    control_session = runtime.client._session if runtime.client else None
+    request_pool = getattr(runtime, "request_pool", None)
+    if control_session is None and request_pool is None:
+        raise RuntimeError("服务未就绪")
+    activation_session = (
+        _PooledActivationSession(control_session, request_pool, account_id)
+        if request_pool is not None
+        else control_session
+    )
+    return await account_service.activate_account(
+        account_id,
+        activation_session,
+        runtime.snapshot_cache,
+        busy_lock,
+    )
 
 
 class LoginStartRequest(BaseModel):
@@ -43,18 +91,14 @@ class UpdateAccountRequest(BaseModel):
     email: str | None = None
 
 
-class ImportCookiesRequest(BaseModel):
-    cookies: str  # "key=value; key=value; ..." 格式
-    name: str | None = None  # 可选的账号名称
-    email: str | None = None  # 可选的邮箱
-    account_id: str | None = None  # 可选的账号 ID（覆盖已有账号）
-
-
-class ImportCookiesResponse(BaseModel):
-    account_id: str
-    name: str
-    cookie_count: int
-    domain_summary: dict[str, int]  # domain -> cookie 数量
+async def _close_request_workers(runtime, account_id: str) -> None:
+    pool = getattr(runtime, "request_pool", None)
+    if pool is None:
+        return
+    try:
+        await asyncio.wait_for(pool.close_account(account_id), timeout=30)
+    except TimeoutError as exc:
+        raise RuntimeError("该账号仍有 API 请求正在执行，请稍后再试") from exc
 
 
 @router.post("/login/start", response_model=LoginStartResponse)
@@ -63,10 +107,15 @@ async def login_start(
     account_service=Depends(get_account_service),
 ):
     """启动 Google 登录流程。"""
+    runtime_state.login_in_progress = True
     try:
         session_id = await account_service.start_login(req.name)
     except RuntimeError as exc:
+        runtime_state.login_in_progress = False
         raise HTTPException(status_code=409, detail=str(exc))
+    except Exception:
+        runtime_state.login_in_progress = False
+        raise
     return LoginStartResponse(session_id=session_id)
 
 
@@ -79,6 +128,14 @@ async def login_status(
     session = account_service.get_login_status(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="登录会话不存在")
+    if session.status.value != "pending":
+        runtime_state.login_in_progress = False
+        if session.status.value == "completed" and session.account_id:
+            runtime_state.account_switching = True
+            try:
+                await _close_request_workers(runtime_state, session.account_id)
+            finally:
+                runtime_state.account_switching = False
     return LoginStatusResponse(
         session_id=session.session_id,
         status=session.status.value,
@@ -86,18 +143,6 @@ async def login_status(
         email=session.email,
         error=session.error,
     )
-
-
-@router.post("/login-profile/clear")
-async def clear_login_profile(
-    account_service=Depends(get_account_service),
-):
-    """清除本机 Google 登录档案（添加账号窗口里记住的账号列表）。"""
-    try:
-        await account_service.clear_login_profile()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    return {"ok": True, "message": "已清除登录档案；下次添加账号需重新登录"}
 
 
 @router.get("", response_model=list[AccountResponse])
@@ -138,21 +183,47 @@ async def get_active_account(
 @router.post("/{account_id}/activate", response_model=AccountResponse)
 async def activate_account(
     account_id: str,
+    source: str = "manual",
     account_service=Depends(get_account_service),
     runtime_state=Depends(get_runtime_state),
 ):
     """切换到指定账号。"""
-    # 从 runtime_state 获取 browser_session, snapshot_cache, busy_lock
-    browser_session = runtime_state.client._session if runtime_state.client else None
-    snapshot_cache = runtime_state.snapshot_cache
-    busy_lock = runtime_state.busy_lock
+    import time
 
-    if browser_session is None:
+    started = time.perf_counter()
+    log.info("[probe] activate.request source=%s account_id=%s", source, account_id)
+    busy_lock = runtime_state.busy_lock
+    if runtime_state.client is None and getattr(runtime_state, "request_pool", None) is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
-    account = await account_service.activate_account(
-        account_id, browser_session, snapshot_cache, busy_lock
-    )
+    runtime_state.account_switching = True
+    try:
+        try:
+            account = await activate_runtime_account(
+                account_service,
+                runtime_state,
+                account_id,
+                busy_lock=busy_lock,
+            )
+        except (AuthError, RuntimeError) as exc:
+            log.warning(
+                "账号初始化未完成 source=%s account_id=%s: %s",
+                source,
+                account_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="账号暂时无法完成初始化，请稍后重试",
+            ) from exc
+    finally:
+        runtime_state.account_switching = False
+        log.info(
+            "[probe] activate.request_done source=%s account_id=%s elapsed=%.3fs",
+            source,
+            account_id,
+            time.perf_counter() - started,
+        )
     if account is None:
         raise HTTPException(status_code=404, detail="账号不存在或切换失败")
     return AccountResponse(
@@ -164,6 +235,26 @@ async def activate_account(
     )
 
 
+@router.post("/{account_id}/prepare")
+async def prepare_account(
+    account_id: str,
+    account_service=Depends(get_account_service),
+    runtime_state=Depends(get_runtime_state),
+):
+    """Warm one logged-in account without changing the preferred account."""
+    if not any(account.id == account_id for account in account_service.list_accounts()):
+        raise HTTPException(status_code=404, detail="账号不存在")
+    pool = getattr(runtime_state, "request_pool", None)
+    if pool is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+    try:
+        await pool.prepare_account(account_id)
+    except (AuthError, RuntimeError) as exc:
+        log.warning("账号后台初始化失败 account_id=%s: %s", account_id, exc)
+        raise HTTPException(status_code=503, detail="账号暂时无法完成初始化，请稍后重试") from exc
+    return {"ok": True, "account_id": account_id}
+
+
 @router.delete("/{account_id}")
 async def delete_account(
     account_id: str,
@@ -171,15 +262,22 @@ async def delete_account(
     runtime_state=Depends(get_runtime_state),
 ):
     """删除账号。"""
-    active = account_service.get_active_account()
-    if active is not None and active.id == account_id:
-        browser_session = runtime_state.client._session if runtime_state.client else None
-        if browser_session is not None:
-            try:
-                await browser_session.release_context()
-            except Exception as e:
-                log.warning("删除账号前释放后台浏览器失败: %s", e)
-    success = account_service.delete_account(account_id)
+    runtime_state.account_switching = True
+    try:
+        await _close_request_workers(runtime_state, account_id)
+        active = account_service.get_active_account()
+        if active is not None and active.id == account_id:
+            browser_session = runtime_state.client._session if runtime_state.client else None
+            if browser_session is not None:
+                try:
+                    await browser_session.release_context()
+                except Exception as e:
+                    log.warning("删除账号前释放后台浏览器失败: %s", e)
+        success = account_service.delete_account(account_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        runtime_state.account_switching = False
     if not success:
         raise HTTPException(status_code=404, detail="账号不存在")
     return {"ok": True}
@@ -193,7 +291,47 @@ async def logout_account(
 ):
     """退出登录：删除账号记录；最后一个账号同时清除本机 Google 登录档案。"""
     browser_session = runtime_state.client._session if runtime_state.client else None
-    result = await account_service.logout_account(account_id, browser_session)
+    active_before = account_service.get_active_account()
+    should_activate_replacement = active_before is not None and active_before.id == account_id
+    runtime_state.account_switching = True
+    try:
+        await _close_request_workers(runtime_state, account_id)
+        result = await account_service.logout_account(account_id, browser_session)
+        if result is not None and should_activate_replacement and result["remaining_accounts"]:
+            # AccountStore chooses a replacement in the registry when the
+            # active account is removed, but that alone does not initialize
+            # BrowserSession. Prepare the oldest usable replacement so traffic
+            # can continue without any user action.
+            remaining = sorted(
+                account_service.list_accounts(),
+                key=lambda item: str(getattr(item, "created_at", "")),
+            )
+            activation_error = None
+            for candidate in remaining:
+                try:
+                    activated = await activate_runtime_account(
+                        account_service,
+                        runtime_state,
+                        candidate.id,
+                        busy_lock=runtime_state.busy_lock,
+                    )
+                    if activated is not None:
+                        result["activated_account_id"] = activated.id
+                        result["message"] += f"；账号 {activated.email or activated.name} 已可用"
+                        break
+                except Exception as exc:
+                    activation_error = exc
+                    log.warning("退出后自动激活账号失败 account_id=%s: %s", candidate.id, exc)
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"账号已退出，但剩余账号自动激活失败：{activation_error or '没有可用账号'}",
+                )
+    except RuntimeError as exc:
+        log.error("退出账号失败 account_id=%s: %s", account_id, exc)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        runtime_state.account_switching = False
     if result is None:
         raise HTTPException(status_code=404, detail="账号不存在")
     return result
@@ -217,58 +355,4 @@ async def update_account(
         email=account.email,
         created_at=account.created_at,
         last_used=account.last_used,
-    )
-
-
-@router.post("/import-cookies", response_model=ImportCookiesResponse)
-async def import_cookies(
-    req: ImportCookiesRequest,
-    account_service=Depends(get_account_service),
-    runtime_state=Depends(get_runtime_state),
-):
-    """从 cookie 字符串导入账号。
-
-    支持格式: `key=value; key=value; ...`（浏览器开发者工具或 Cookie 编辑扩展导出格式）
-
-    流程: 解析 → 保存到 store → 注入浏览器 → 访问页面 → 导出 auth.json
-    """
-    # 1. 解析并保存到账号 store
-    storage_state = parse_cookie_string(req.cookies)
-    cookie_count = len(storage_state["cookies"])
-
-    if cookie_count == 0:
-        raise HTTPException(status_code=400, detail="未解析到有效 cookie")
-
-    domain_summary: dict[str, int] = {}
-    for c in storage_state["cookies"]:
-        d = c["domain"]
-        domain_summary[d] = domain_summary.get(d, 0) + 1
-
-    name = req.name or "导入的账号"
-
-    account = account_service._store.save_account(
-        name=name,
-        email=req.email,
-        storage_state=storage_state,
-        account_id=req.account_id,
-    )
-
-    # 2. 注入浏览器 + 访问页面 + 保存 auth.json
-    try:
-        browser_session = runtime_state.client._session if runtime_state.client else None
-        if browser_session:
-            auth_path = account_service._store.get_auth_path(account.id)
-            count = await browser_session.import_cookies(
-                req.cookies,
-                auth_file=str(auth_path) if auth_path else None,
-            )
-            log.info("[import-cookies] injected %d cookies, saved auth.json", count)
-    except Exception as e:
-        log.warning("[import-cookies] browser injection failed: %s", e)
-
-    return ImportCookiesResponse(
-        account_id=account.id,
-        name=account.name,
-        cookie_count=cookie_count,
-        domain_summary=domain_summary,
     )

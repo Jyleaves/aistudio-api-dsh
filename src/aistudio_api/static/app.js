@@ -2,11 +2,12 @@
 function app() {
   return {
     view: 'accounts', sidebarOpen: false, configOpen: false, openSelect: null,
-    stats: {}, rotationMode: 'round_robin', rotCfg: { mode: 'round_robin', cooldown: 60 },
-    accounts: [], rotationAccounts: {}, activeId: '', activeAccount: {},
+    guideProtocol: 'openai',
+    stats: {},
+    accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
-    updateInfo: { checking: false, updating: false, checked: false, available: false, dirty: false, error: '' },
+    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.0', latest: '', asset_size: 0, error: '' },
     settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },
@@ -14,9 +15,15 @@ function app() {
     msgs: [], draft: '', selectedImages: [], busy: false,
     cfg: { thinking: 'off', search: 'off', stream: 'on', temperature: 1.0, topP: 0.95, maxTokens: 32768, safety: 'on' },
     toast: { show: false, msg: '', t: null },
-    cookieModal: { open: false, cookies: '', name: '', email: '', importing: false },
     accountEdit: { open: false, id: '', name: '', saving: false },
+    confirmDialog: { open: false, title: '', message: '', confirmText: '确定', danger: false, target: '', targetLabel: '', hint: '', _resolve: null },
     loginInProgress: false,
+    loginPreviousActiveId: '',
+    accountPreparations: {}, accountInitErrors: {},
+    appReady: false, appReadyMessage: '正在初始化...',
+    requestPoolStatus: { ready_accounts: [], initializing_accounts: [], failed_accounts: {} },
+    accountWarmupMonitoring: false,
+    accountStatusTimer: null,
 
     async init() {
       await this.checkAuth();
@@ -24,20 +31,33 @@ function app() {
       // Load the server default before model discovery so a clean browser
       // session starts with the configured default instead of alphabetical order.
       await this.loadSettings();
+      await this.refreshReadiness();
       await Promise.all([
         this.loadModels(),
         this.loadStats(),
         this.loadAccounts(),
-        this.loadRotation(),
+        this.loadAccountMetrics(),
         this.loadApiKeys(),
       ]);
+      await this.loadRequestPoolStatus();
+      this.monitorAccountWarmup();
+      this.accountStatusTimer = setInterval(() => {
+        if (this.view !== 'accounts') return;
+        Promise.all([
+          this.loadAccountMetrics(),
+          this.loadRequestPoolStatus(),
+        ]).catch(() => {});
+      }, 2000);
+      window.addEventListener('beforeunload', () => {
+        if (this.accountStatusTimer) clearInterval(this.accountStatusTimer);
+      }, { once: true });
       this.$watch('cfg', () => this.saveToCache(), { deep: true });
       this.$watch('model', () => this.saveToCache());
       this.$watch('auth.token', () => this.saveToCache());
       document.addEventListener('click', () => this.openSelect = null);
-      // Check in the background so the sidebar can show a badge without
-      // delaying the rest of the management UI.
-      this.checkUpdate();
+      // A packaged app checks the official release channel silently. This is
+      // intentionally independent of the source checkout and Git.
+      this.checkUpdate(true);
     },
 
     async checkAuth() {
@@ -102,8 +122,12 @@ function app() {
         else localStorage.removeItem('asp_api_token');
       } catch (e) { console.error('Cache save error', e); }
     },
-    clearCache() {
-      if (!confirm('确定要清理本地缓存（聊天历史和配置）吗？')) return;
+    async clearCache() {
+      const ok = await this.askConfirm('清理本地缓存', '将清除当前界面的聊天历史和个性化选项。账号与服务设置不会受影响。', {
+        confirmText: '确认清理', danger: true,
+        hint: '此操作无法撤销。'
+      });
+      if (!ok) return;
       localStorage.removeItem('asp_msgs');
       localStorage.removeItem('asp_cfg');
       localStorage.removeItem('asp_model');
@@ -113,10 +137,60 @@ function app() {
     go(v) {
       this.view = v; this.sidebarOpen = false; this.configOpen = false;
       if (v === 'dashboard') this.loadStats();
-      if (v === 'accounts') { this.loadAccounts(); this.loadRotation() }
+      if (v === 'accounts') { this.loadAccounts(); this.loadAccountMetrics(); this.loadRequestPoolStatus(); this.monitorAccountWarmup() }
       if (v === 'api-keys') this.loadApiKeys();
       if (v === 'settings') this.loadSettings();
       if (v === 'update') this.checkUpdate();
+    },
+    get serviceOrigin() {
+      return window.location.origin;
+    },
+    async copyText(value) {
+      try {
+        await navigator.clipboard.writeText(value);
+        this.showToast('已复制');
+      } catch (e) {
+        console.warn('Clipboard write failed', e);
+        this.showToast('复制失败，请手动复制');
+      }
+    },
+    async refreshReadiness() {
+      try {
+        const r = await this.apiFetch(`/health?t=${Date.now()}`, { cache: 'no-store' });
+        if (r.ok) {
+          const d = await r.json();
+          this.appReady = Boolean(d.ready);
+          this.appReadyMessage = d.message || (this.appReady ? '已就绪' : '正在初始化...');
+        }
+      } catch (e) { this.appReady = false; this.appReadyMessage = '正在连接服务...'; }
+    },
+    async loadRequestPoolStatus() {
+      try {
+        const r = await this.apiFetch(`/runtime/request-pool?t=${Date.now()}`, { cache: 'no-store' });
+        if (r.ok) {
+          this.requestPoolStatus = await r.json();
+          this.accountInitErrors = { ...(this.requestPoolStatus.failed_accounts || {}) };
+        }
+      } catch (e) { console.warn('Request pool status failed', e); }
+    },
+    get hasAccountPreparations() {
+      return Object.keys(this.accountPreparations).length > 0;
+    },
+    get hasInitializingAccounts() {
+      const ready = new Set(this.requestPoolStatus.ready_accounts || []);
+      return this.accounts.some(account => !ready.has(account.id) && !this.accountInitErrors[account.id]);
+    },
+    async monitorAccountWarmup() {
+      if (this.accountWarmupMonitoring) return;
+      this.accountWarmupMonitoring = true;
+      try {
+        while (this.accounts.length && this.hasInitializingAccounts) {
+          await new Promise(resolve => setTimeout(resolve, 750));
+          await this.loadRequestPoolStatus();
+        }
+      } finally {
+        this.accountWarmupMonitoring = false;
+      }
     },
     newChat() { this.msgs = []; this.saveToCache(); this.showToast('已创建新对话') },
     showToast(m) { this.toast.msg = m; this.toast.show = true; if (this.toast.t) clearTimeout(this.toast.t); this.toast.t = setTimeout(() => this.toast.show = false, 3000) },
@@ -199,23 +273,30 @@ function app() {
           this.apiFetch(`/accounts${cacheBust}`, { cache: 'no-store' }),
           this.apiFetch(`/accounts/active${cacheBust}`, { cache: 'no-store' })
         ]);
-        if (!ar.ok || !br.ok) throw new Error('account refresh failed');
-        const [a, b] = await Promise.all([ar.json(), br.json()]);
-        this.accounts = Array.isArray(a) ? a : [];
+        if (!ar.ok) throw new Error('account refresh failed');
+        const a = await ar.json();
+        // After the last account is removed, /accounts/active correctly
+        // returns 404. Treat that as an empty active selection so the UI does
+        // not keep rendering the deleted account from its previous state.
+        const b = br.ok ? await br.json() : {};
+        // Keep account-pool order stable: oldest accounts first, newly added
+        // accounts append to the end instead of jumping to the top.
+        this.accounts = (Array.isArray(a) ? a : []).sort((left, right) => {
+          const leftCreated = String(left.created_at || '');
+          const rightCreated = String(right.created_at || '');
+          return leftCreated.localeCompare(rightCreated);
+        });
         this.activeId = b?.id || '';
         this.activeAccount = b || {};
       } catch (e) { console.warn('Account refresh failed', e); }
     },
-    async refreshAccountData() { await Promise.all([this.loadAccounts(), this.loadRotation()]); },
-    async loadRotation() {
+    async refreshAccountData() { await Promise.all([this.loadAccounts(), this.loadAccountMetrics()]); },
+    async loadAccountMetrics() {
       try {
-        const r = await this.apiFetch(`/rotation?t=${Date.now()}`, { cache: 'no-store' });
+        const r = await this.apiFetch(`/rotation/accounts?t=${Date.now()}`, { cache: 'no-store' });
         const d = await r.json();
-        this.rotationMode = d.mode || 'round_robin';
-        this.rotCfg.mode = d.mode || 'round_robin';
-        this.rotCfg.cooldown = d.cooldown_seconds || 60;
-        this.rotationAccounts = d.accounts || {};
-      } catch (e) { console.warn('Rotation refresh failed', e); }
+        this.accountMetrics = d || {};
+      } catch (e) { console.warn('Account metrics refresh failed', e); }
     },
     async loadApiKeys() {
       const requestId = ++this.apiKeysRequestId;
@@ -244,7 +325,7 @@ function app() {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { this.showToast(d.detail || '设置保存失败'); return; }
         this.settings = d.settings || this.settings;
-        this.showToast('设置已保存；部分项目需重启反代后生效');
+        this.showToast('设置已保存；部分项目将在重启 Asteria 后生效');
       } catch (e) { this.showToast('网络错误'); }
       finally { this.settingsSaving = false; }
     },
@@ -271,7 +352,14 @@ function app() {
       finally { this.apiKeyCreate.saving = false; }
     },
     async revokeApiKey(id) {
-      if (!confirm('确定删除这个 API Key 吗？已使用它的客户端会立即失效。')) return;
+      const key = this.apiKeys.find(item => item.id === id);
+      const ok = await this.askConfirm('删除 API Key', '删除后，正在使用该密钥的客户端将无法继续访问。', {
+        confirmText: '确认删除', danger: true,
+        target: key?.name || key?.prefix || id,
+        targetLabel: '即将删除的密钥',
+        hint: '此操作无法撤销。'
+      });
+      if (!ok) return;
       try {
         const r = await this.apiFetch(`/auth/api-keys/${id}/revoke`, { method: 'POST' });
         const d = await r.json().catch(() => ({}));
@@ -283,53 +371,133 @@ function app() {
         this.showToast('API Key 已删除');
       } catch (e) { this.showToast('网络错误'); }
     },
-    async checkUpdate() {
+    async checkUpdate(silent = false) {
       this.updateInfo.checking = true;
       try {
         const r = await this.apiFetch(`/update/check?t=${Date.now()}`, { cache: 'no-store' });
         const d = await r.json().catch(() => ({}));
         this.updateInfo = { ...this.updateInfo, ...d, checking: false, checked: true, error: d.error || '' };
+        if (!silent && d.available) this.showToast(`发现 Asteria ${d.latest}`);
       } catch (e) {
         this.updateInfo.checking = false; this.updateInfo.checked = true; this.updateInfo.error = '检查更新失败';
       }
     },
+    async waitForUpdateDownload() {
+      for (let i = 0; i < 600; i++) {
+        const r = await this.apiFetch(`/update/status?t=${Date.now()}`, { cache: 'no-store' });
+        const d = await r.json().catch(() => ({}));
+        this.updateInfo = { ...this.updateInfo, ...d, updating: d.status === 'downloading' };
+        if (d.status === 'ready') return true;
+        if (d.status === 'error') { this.showToast(d.error || '更新下载失败'); return false; }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      this.showToast('更新下载超时');
+      return false;
+    },
     async startUpdate() {
-      if (!confirm('更新会停止并重启反代，确定继续吗？')) return;
+      const ok = await this.askConfirm('安装更新', '安装期间 Asteria 会短暂关闭，并在完成后重新启动。', {
+        confirmText: '开始更新',
+        hint: '账号与本机设置会保留。'
+      });
+      if (!ok) return;
       this.updateInfo.updating = true;
       try {
+        if (this.updateInfo.status !== 'ready') {
+          const download = await this.apiFetch('/update/download', { method: 'POST' });
+          const downloadData = await download.json().catch(() => ({}));
+          if (!download.ok) { this.showToast(downloadData.detail || '更新下载失败'); this.updateInfo.updating = false; return; }
+          this.updateInfo = { ...this.updateInfo, ...downloadData };
+          if (!await this.waitForUpdateDownload()) { this.updateInfo.updating = false; return; }
+        }
         const r = await this.apiFetch('/update', { method: 'POST' });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { this.showToast(d.detail || '更新失败'); this.updateInfo.updating = false; return; }
-        this.showToast('更新已开始，反代即将重启');
-      } catch (e) { this.showToast('更新进程已启动，页面即将断开'); }
+        this.updateInfo = { ...this.updateInfo, ...d, updating: true };
+        this.showToast('更新已开始，Asteria 即将重启');
+      } catch (e) { this.updateInfo.updating = false; this.showToast('更新进程启动失败'); }
     },
 
-    get accountRows() { return this.accounts.map(a => ({ ...a, ...(this.rotationAccounts[a.id] || {}) })) },
+    get accountRows() {
+      return this.accounts.map(a => ({
+        ...a,
+        ...(this.accountMetrics[a.id] || {}),
+        availability: this.accountInitErrors[a.id]
+          ? 'failed'
+          : ((this.requestPoolStatus.ready_accounts || []).includes(a.id) ? 'available' : 'initializing'),
+      }));
+    },
     get totalReqs() { return Object.values(this.stats).reduce((s, v) => s + (v.requests || 0), 0) },
     get totalRL() { return Object.values(this.stats).reduce((s, v) => s + (v.rate_limited || 0), 0) },
+    get readyAccountCount() { return (this.requestPoolStatus.ready_accounts || []).length },
 
-    async saveRotation() { try { await this.apiFetch('/rotation/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: this.rotCfg.mode, cooldown_seconds: this.rotCfg.cooldown }) }); this.showToast('已保存'); this.loadRotation() } catch (e) { this.showToast('保存失败') } },
-    async forceNext() { try { await this.apiFetch('/rotation/next', { method: 'POST' }); await this.refreshAccountData(); this.showToast('已切换账号') } catch (e) { this.showToast('切换失败') } },
-    async activateAccount(id) { try { await this.apiFetch(`/accounts/${id}/activate`, { method: 'POST' }); await this.refreshAccountData(); this.showToast('已激活') } catch (e) { this.showToast('激活失败') } },
+    async prepareAccount(id, announce = true) {
+      if (this.accountPreparations[id]) return;
+      this.accountPreparations = { ...this.accountPreparations, [id]: true };
+      const nextErrors = { ...this.accountInitErrors };
+      delete nextErrors[id];
+      this.accountInitErrors = nextErrors;
+      if (announce) this.showToast('正在后台准备账号…');
+      try {
+        const response = await this.apiFetch(`/accounts/${id}/prepare`, { method: 'POST' });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = typeof payload.detail === 'string'
+            ? payload.detail
+            : (payload.detail?.message || `HTTP ${response.status}`);
+          throw new Error(detail || '账号初始化失败');
+        }
+        await this.loadRequestPoolStatus();
+        if (announce) this.showToast('账号已可用');
+      } catch (e) {
+        this.accountInitErrors = { ...this.accountInitErrors, [id]: e.message || '初始化失败' };
+        this.showToast(`初始化失败：${e.message || '请稍后重试'}`);
+      } finally {
+        const nextPreparations = { ...this.accountPreparations };
+        delete nextPreparations[id];
+        this.accountPreparations = nextPreparations;
+      }
+    },
+    askConfirm(title, message, { confirmText = '确定', danger = false, target = '', targetLabel = '', hint = '' } = {}) {
+      return new Promise(resolve => {
+        this.confirmDialog = { open: true, title, message, confirmText, danger, target, targetLabel, hint, _resolve: resolve };
+      });
+    },
+    resolveConfirm(value) {
+      const resolve = this.confirmDialog._resolve;
+      this.confirmDialog.open = false;
+      this.confirmDialog._resolve = null;
+      if (resolve) resolve(value);
+    },
     async logoutAccount(account) {
       const label = account.email || account.name || account.id;
-      if (!confirm(`确定让账号 ${label} 退出登录吗？\n\n会删除反代中的账号记录${this.accountRows.length <= 1 ? '，并清除本机 Google 登录档案（下次添加账号需重新登录）' : '；其他账号的快捷登录不受影响'}。`)) return;
+      const ok = await this.askConfirm('退出登录', `确定要退出此账号吗？退出后需要重新登录才能恢复使用。`, {
+        confirmText: '确认退出', danger: true, target: label,
+        targetLabel: '即将退出的账号',
+        hint: '账号本地会话和浏览器缓存将一并清理。'
+      });
+      if (!ok) return;
+      // Give immediate, reversible feedback while Chromium profile cleanup
+      // continues on Windows. A failed request restores authoritative state.
+      this.accounts = this.accounts.filter(item => item.id !== account.id);
+      if (this.activeId === account.id) {
+        this.activeId = '';
+        this.activeAccount = {};
+      }
+      this.showToast('正在退出登录并清理本地数据…');
       try {
         const r = await this.apiFetch(`/accounts/${account.id}/logout`, { method: 'POST' });
         const d = await r.json().catch(() => ({}));
-        if (!r.ok) { this.showToast(d.detail || '退出登录失败'); return }
+        if (!r.ok) {
+          await this.refreshAccountData();
+          this.showToast(d.detail || '退出登录失败');
+          return;
+        }
         this.showToast(d.message || '已退出登录');
+        await Promise.all([this.refreshAccountData(), this.loadRequestPoolStatus()]);
+      } catch (e) {
         await this.refreshAccountData();
-      } catch (e) { this.showToast('网络错误') }
-    },
-    async clearLoginProfile() {
-      if (!confirm('确定清除本机 Google 登录档案吗？\n\n下次“添加账号”将不再显示已记住的账号列表，需要重新输入账号信息。已添加账号不受影响。')) return;
-      try {
-        const r = await this.apiFetch('/accounts/login-profile/clear', { method: 'POST' });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) { this.showToast(d.detail || '清除失败'); return }
-        this.showToast(d.message || '已清除登录档案');
-      } catch (e) { this.showToast('网络错误') }
+        this.showToast('网络错误');
+      }
     },
     openAccountEdit(account) {
       this.accountEdit = { open: true, id: account.id, name: account.name || '', saving: false };
@@ -354,6 +522,10 @@ function app() {
     },
     async addAccount() {
       if (this.loginInProgress) return;
+      // Do not let adding an account switch the account serving API traffic.
+      // Only a clean installation with no active account may initialize the
+      // first account automatically.
+      this.loginPreviousActiveId = this.activeId;
       this.loginInProgress = true;
       try {
         const r = await this.apiFetch('/accounts/login/start', {
@@ -393,11 +565,10 @@ function app() {
           }
           transientFailures = 0;
           if (d.status === 'completed') {
-            if (d.account_id) {
-              await this.apiFetch(`/accounts/${d.account_id}/activate`, { method: 'POST' });
-            }
             await this.refreshAccountData();
-            this.showToast(`登录成功${d.email ? ': ' + d.email : ''}`);
+            this.showToast(`登录成功${d.email ? ': ' + d.email : ''}，正在后台准备`);
+            if (d.account_id) this.prepareAccount(d.account_id, false);
+            this.loginPreviousActiveId = '';
             return;
           }
           if (d.status === 'failed') {
@@ -421,28 +592,6 @@ function app() {
       const msg = `登录失败：${error}`;
       return msg.length > 180 ? `${msg.slice(0, 177)}...` : msg;
     },
-    async importCookies() {
-      const raw = this.cookieModal.cookies.trim();
-      if (!raw) { this.showToast('请输入 Cookie'); return }
-      // 支持多行：每行一个 cookie 或用分号分隔
-      const cookies = raw.split(/[\r\n]+/).map(l => l.trim()).filter(Boolean).join('; ');
-      this.cookieModal.importing = true;
-      try {
-        const body = { cookies };
-        if (this.cookieModal.name.trim()) body.name = this.cookieModal.name.trim();
-        if (this.cookieModal.email.trim()) body.email = this.cookieModal.email.trim();
-        const r = await this.apiFetch('/accounts/import-cookies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const d = await r.json();
-        if (r.ok) {
-          this.showToast(`导入成功: ${d.cookie_count} 个 cookie`);
-          this.cookieModal.open = false; this.cookieModal.cookies = ''; this.cookieModal.name = ''; this.cookieModal.email = '';
-          this.loadAccounts(); this.loadRotation();
-        } else {
-          this.showToast(d.detail || '导入失败');
-        }
-      } catch (e) { this.showToast('网络错误') }
-      finally { this.cookieModal.importing = false }
-    },
 
     resizeTa() { const el = this.$refs.ta; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 200) + 'px' },
     scrollDown() { setTimeout(() => { const el = document.getElementById('chat-scroll'); if (el) el.scrollTop = el.scrollHeight }, 50) },
@@ -461,6 +610,7 @@ function app() {
 
     async send() {
       const t = this.draft.trim(); const imgs = [...this.selectedImages]; if (!t && !imgs.length) return; if (this.busy || !this.model) return;
+      if (!this.appReady) { this.showToast(this.appReadyMessage || '正在初始化，请稍候'); return; }
       this.msgs.push({ role: 'user', content: t, images: imgs }); this.draft = ''; this.selectedImages = []; this.busy = true; this.resizeTa(); this.scrollDown(); this.saveToCache();
 
       // 生图模型走 /v1/images/edits (支持原始图片编辑)
@@ -508,31 +658,49 @@ function app() {
       if (this.cfg.search === 'on') body.google_search = true;
       if (this.cfg.safety === 'off') body.safety_off = true;
 
+      let streamMessageIndex = -1;
+      if (this.cfg.stream === 'on') {
+        this.msgs.push({ role: 'assistant', content: '正在准备账号和模型…', thinking: '', showThinking: false, pending: true });
+        streamMessageIndex = this.msgs.length - 1;
+        this.scrollDown();
+      }
+
       try {
         const r = await this.apiFetch('/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!r.ok) { let e = r.statusText; try { const d = await r.json(); if (d.detail) e = JSON.stringify(d.detail) } catch (x) { }; this.msgs.push({ role: 'assistant', content: '', error: `Error ${r.status}: ${e}` }) }
+        if (!r.ok) { let e = r.statusText; try { const d = await r.json(); if (d.detail) e = JSON.stringify(d.detail) } catch (x) { }; const error = `Error ${r.status}: ${e}`; if (streamMessageIndex >= 0) this.msgs[streamMessageIndex] = { role: 'assistant', content: '', error, pending: false }; else this.msgs.push({ role: 'assistant', content: '', error }) }
         else if (this.cfg.stream === 'on') {
-          const reader = r.body.getReader(); const dec = new TextDecoder(); this.msgs.push({ role: 'assistant', content: '', thinking: '', showThinking: false }); const idx = this.msgs.length - 1; let buf = '';
+          const reader = r.body.getReader(); const dec = new TextDecoder(); const idx = streamMessageIndex; let buf = ''; let received = false;
+          this.msgs[idx] = { ...this.msgs[idx], content: '正在等待模型回复…' };
           while (true) {
             const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop();
             for (const ln of lines) {
               if (ln.startsWith('data: ') && ln !== 'data: [DONE]') {
                 try {
                   const d = JSON.parse(ln.slice(6)); const delta = d.choices?.[0]?.delta || {};
-                  const c = delta.content; if (c) this.msgs[idx].content += c;
-                  const th = delta.reasoning_content || delta.thinking || delta.reasoning; if (th) this.msgs[idx].thinking += th;
+                  const c = delta.content; const th = delta.reasoning_content || delta.thinking || delta.reasoning;
+                  if (c || th) {
+                    const current = this.msgs[idx];
+                    this.msgs[idx] = {
+                      ...current,
+                      content: `${received ? current.content : ''}${c || ''}`,
+                      thinking: `${received ? current.thinking : ''}${th || ''}`,
+                      pending: false,
+                    };
+                    received = true;
+                  }
                 } catch (e) { }
               }
             }
             this.scrollDown()
           }
+          if (!received) this.msgs[idx] = { ...this.msgs[idx], content: '(无响应内容)', pending: false };
           this.saveToCache();
         } else {
           const d = await r.json(); const msg = d.choices?.[0]?.message || {};
           this.msgs.push({ role: 'assistant', content: msg.content || '(无响应内容)', thinking: msg.reasoning_content || msg.thinking || msg.reasoning || '', showThinking: false })
         }
       }
-      catch (e) { this.msgs.push({ role: 'assistant', content: '', error: e.message }) }
+      catch (e) { if (streamMessageIndex >= 0) this.msgs[streamMessageIndex] = { role: 'assistant', content: '', error: e.message, pending: false }; else this.msgs.push({ role: 'assistant', content: '', error: e.message }) }
       finally { this.busy = false; this.scrollDown(); this.saveToCache() }
     },
 

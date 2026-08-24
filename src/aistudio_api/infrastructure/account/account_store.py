@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from aistudio_api.config import USER_DATA_ROOT
+
+logger = logging.getLogger("aistudio.account_store")
+
 # 默认搜索路径（与 config.py 保持一致）
 _SEARCH_ROOTS: list[Path] = [
+    USER_DATA_ROOT,
     Path.cwd(),
     Path(__file__).resolve().parents[4],  # src/aistudio_api/infrastructure/account -> 项目根
 ]
@@ -25,12 +32,23 @@ def _resolve_accounts_dir() -> Path:
         if not candidate.is_absolute():
             candidate = Path(__file__).resolve().parents[4] / candidate
         return candidate.resolve()
-    for root in _SEARCH_ROOTS:
+    preferred = (USER_DATA_ROOT / "data" / "accounts").resolve()
+    if preferred.is_dir():
+        return preferred
+
+    # Migrate accounts created by older desktop builds that wrote into the
+    # read-only installation directory. Keep the existing cookies/auth state,
+    # but make the new runtime location writable for normal users.
+    for root in _SEARCH_ROOTS[1:]:
         candidate = root / "data" / "accounts"
         if candidate.is_dir():
-            return candidate
-    # 默认在第一个搜索根下创建
-    return (_SEARCH_ROOTS[0] / "data" / "accounts").resolve()
+            try:
+                preferred.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(candidate, preferred, dirs_exist_ok=True)
+                return preferred
+            except OSError:
+                return candidate.resolve()
+    return preferred
 
 
 def _resolve_legacy_auth_file() -> Path | None:
@@ -102,7 +120,24 @@ class AccountStore:
         """确保目录存在，并清理上次删除账号时被占用的残留目录。"""
         self._accounts_dir.mkdir(parents=True, exist_ok=True)
         for leftover in self._accounts_dir.glob(".deleted-*"):
-            shutil.rmtree(leftover, ignore_errors=True)
+            if self._remove_account_dir(leftover):
+                logger.info("已清理上次删除账号留下的残留目录: %s", leftover)
+            else:
+                logger.warning("账号残留目录仍被占用，将保留到下次启动继续清理: %s", leftover)
+
+    @staticmethod
+    def _remove_account_dir(account_dir: Path) -> bool:
+        """删除账号目录；Windows 文件锁短暂存在时进行有限重试。"""
+        if not account_dir.exists():
+            return True
+        for attempt in range(3):
+            try:
+                shutil.rmtree(account_dir)
+                return not account_dir.exists()
+            except OSError:
+                if attempt < 2:
+                    time.sleep(0.25)
+        return not account_dir.exists()
 
     def _migrate_legacy_if_needed(self) -> None:
         """如果 accounts 目录为空且存在 data/auth.json，自动迁移。"""
@@ -252,14 +287,16 @@ class AccountStore:
 
         account_dir = self._accounts_dir / account_id
         if account_dir.is_dir():
-            try:
-                shutil.rmtree(account_dir)
-            except OSError:
+            if not self._remove_account_dir(account_dir):
                 try:
-                    account_dir.rename(self._accounts_dir / f".deleted-{account_id}")
+                    leftover = self._accounts_dir / f".deleted-{account_id}"
+                    if leftover.exists():
+                        leftover = self._accounts_dir / f".deleted-{account_id}-{int(time.time())}"
+                    account_dir.rename(leftover)
+                    logger.warning("账号目录被占用，已移入待清理残留目录: %s", leftover)
                 except OSError:
                     # 改名也失败（目录仍被占用），留给下次启动清理。
-                    pass
+                    logger.warning("账号目录仍被占用，暂时无法清理: %s", account_dir)
         return True
 
     def update_account(

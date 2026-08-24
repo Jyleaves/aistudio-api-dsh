@@ -208,11 +208,15 @@ def detect_background_browser() -> dict[str, str] | None:
 
 
 def _find_playwright_chromium() -> str | None:
-    """定位 `python -m playwright install chromium` 下载的稳定版 Chromium。"""
+    """定位应用自带 Chromium，优先使用项目内置的独立浏览器副本。"""
     roots: list[Path] = []
     override = os.getenv("PLAYWRIGHT_BROWSERS_PATH")
     if override and override != "0":
         roots.append(Path(override))
+    else:
+        bundled = PROJECT_ROOT / "cloakbrowser-chromium" / "chrome.exe"
+        if bundled.is_file():
+            return str(bundled)
     # The desktop installer ships a Playwright Chromium copy next to the app.
     # Prefer it so the installed application is self-contained and reproducible.
     roots.append(PROJECT_ROOT / "playwright-browsers")
@@ -244,9 +248,14 @@ def _find_playwright_chromium() -> str | None:
 
 def _background_launch_args(kind: str, *, headless: bool, stable_fingerprint_key: str | None = None) -> list[str]:
     if kind == "cloakbrowser":
-        # fingerprint 参数只有 CloakBrowser 定制二进制认识
+        # The interactive login launches the bundled executable through plain
+        # Playwright and therefore does not add CloakBrowser's --fingerprint
+        # switch. Reusing its cookies with a synthetic worker fingerprint makes
+        # Google see a different device and reject GenerateContent with 403.
+        # Independent profiles/processes already isolate concurrency; let every
+        # worker present the same real machine identity as the login browser.
         return _build_cloakbrowser_args(
-            headless=headless, stable_fingerprint_key=stable_fingerprint_key
+            headless=headless, stable_fingerprint_key=None
         )
     args: list[str] = []
     if not headless:
@@ -311,6 +320,7 @@ def sync_launch_persistent_context(
     user_data_dir: str,
     *,
     headless: bool | None = None,
+    stable_fingerprint_key: str | None = None,
     **context_kwargs: Any,
 ) -> Any:
     """Launch a persistent Chromium BrowserContext backed by a profile dir."""
@@ -335,7 +345,7 @@ def sync_launch_persistent_context(
             stealth_args=False,
             args=_build_cloakbrowser_args(
                 headless=headless,
-                stable_fingerprint_key=user_data_dir,
+                stable_fingerprint_key=None,
             ),
             **context_kwargs,
         )
@@ -358,7 +368,9 @@ def sync_launch_persistent_context(
         chromium_sandbox=settings.browser_chromium_sandbox,
         ignore_default_args=_CHROMIUM_IGNORE_DEFAULT_ARGS,
         args=_background_launch_args(
-            found["kind"], headless=headless, stable_fingerprint_key=user_data_dir
+            found["kind"],
+            headless=headless,
+            stable_fingerprint_key=stable_fingerprint_key or user_data_dir,
         ),
         **context_kwargs,
     )
@@ -599,12 +611,18 @@ async def async_launch_login_context(*, headless: bool, profile_dir: str) -> Log
     account shows Google's account chooser (one click + authorize) instead of
     the full email/password/2FA flow every time.
 
-    Preference order honors AISTUDIO_LOGIN_BROWSER (default "auto"):
-    1. system Chrome/Edge — no download required. The user's default browser
-       is tried first; on launch failure (e.g. Edge's startup-boost background
-       process hijacks custom-profile launches) the other browser is tried.
-    2. cloakbrowser stealth Chromium — downloads on demand
+    The desktop default is the bundled Playwright Chromium. System Chrome/Edge
+    is available only when explicitly selected, because Google may reject an
+    automated session launched through a user's regular browser.
     """
+    if settings.login_browser == "chromium":
+        executable = _find_playwright_chromium()
+        if executable:
+            return await _launch_executable_login_browser(
+                executable, headless=headless, profile_dir=profile_dir, backend="playwright:chromium"
+            )
+        raise RuntimeError("未找到应用内置 Chromium，请重新安装应用")
+
     if settings.login_browser in ("auto", "system"):
         failures: list[str] = []
         for candidate in _system_login_candidates():
@@ -653,6 +671,23 @@ async def _launch_system_login_browser(
     headless: bool,
     profile_dir: str,
 ) -> LoginBrowserHandle:
+    return await _launch_executable_login_browser(
+        candidate["executable_path"],
+        headless=headless,
+        profile_dir=profile_dir,
+        backend=f"system:{candidate['channel']}",
+        channel=candidate["channel"] if not candidate["executable_path"] else None,
+    )
+
+
+async def _launch_executable_login_browser(
+    executable_path: str,
+    *,
+    headless: bool,
+    profile_dir: str,
+    backend: str,
+    channel: str | None = None,
+) -> LoginBrowserHandle:
     from playwright.async_api import async_playwright
 
     playwright = await async_playwright().start()
@@ -671,10 +706,10 @@ async def _launch_system_login_browser(
     proxy = build_camoufox_proxy(settings.proxy_url)
     if proxy:
         launch_options["proxy"] = proxy
-    if candidate["executable_path"]:
-        launch_options["executable_path"] = candidate["executable_path"]
+    if executable_path:
+        launch_options["executable_path"] = executable_path
     else:
-        launch_options["channel"] = candidate["channel"]
+        launch_options["channel"] = channel
     try:
         context = await playwright.chromium.launch_persistent_context(**launch_options)
     except Exception:
@@ -684,5 +719,5 @@ async def _launch_system_login_browser(
     return LoginBrowserHandle(
         context=context,
         playwright=playwright,
-        backend=f"system:{candidate['channel']}",
+        backend=backend,
     )

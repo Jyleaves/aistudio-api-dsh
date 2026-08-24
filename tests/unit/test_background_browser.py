@@ -3,7 +3,7 @@
 import sys
 import types
 
-sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
+sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: None))
 playwright_module = sys.modules.setdefault("playwright", types.ModuleType("playwright"))
 async_api_module = sys.modules.setdefault("playwright.async_api", types.ModuleType("playwright.async_api"))
 sync_api_module = sys.modules.setdefault("playwright.sync_api", types.ModuleType("playwright.sync_api"))
@@ -14,6 +14,17 @@ setattr(sync_api_module, "sync_playwright", lambda: None)
 
 from aistudio_api.infrastructure.browser import browser_engine as engine
 from aistudio_api.infrastructure.browser.browser_engine import detect_background_browser
+
+
+def test_cloak_background_args_match_login_device_without_fingerprint():
+    args = engine._background_launch_args(
+        "cloakbrowser",
+        headless=True,
+        stable_fingerprint_key="worker-profile-that-must-not-change-device",
+    )
+
+    assert all(not arg.startswith("--fingerprint=") for arg in args)
+    assert "--fingerprint-platform=windows" in args
 
 
 def test_discovery_prefers_env_executable_then_bundled_then_system(monkeypatch, tmp_path):

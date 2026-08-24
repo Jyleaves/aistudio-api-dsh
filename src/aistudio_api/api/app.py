@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -27,8 +28,6 @@ logger = logging.getLogger("aistudio.server")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import asyncio
-
     from aistudio_api.config import settings
     from aistudio_api.infrastructure.auth.api_key_store import get_api_key_store
     from aistudio_api.infrastructure.account.account_store import AccountStore
@@ -56,6 +55,10 @@ async def lifespan(app: FastAPI):
     login_service = LoginService()
     account_service = AccountService(account_store, login_service)
     runtime_state.account_service = account_service
+    # API 与 UI 先就绪；账号浏览器随后在后台并行初始化。已经完成初始化
+    # 的账号可以立即处理请求，不需要等待其余账号。
+    runtime_state.ready = True
+    runtime_state.ready_message = "已就绪，正在准备账号"
 
     # 初始化账号轮询器
     rotation_mode = getattr(settings, "account_rotation_mode", "round_robin")
@@ -66,6 +69,38 @@ async def lifespan(app: FastAPI):
         cooldown_seconds=cooldown,
     )
     runtime_state.rotator = rotator
+    from aistudio_api.application.request_client_pool import RequestClientPool
+
+    runtime_state.request_pool = RequestClientPool(
+        account_store,
+        max_concurrency=app_settings.max_concurrency,
+        port=runtime_state.browser_port,
+        rotator=rotator,
+        control_client=client,
+    )
+
+    account_warmup_task: asyncio.Task | None = None
+    warmup_account_count = len(account_store.list_accounts())
+    if warmup_account_count:
+        runtime_state.ready_message = f"已就绪，正在后台初始化 {warmup_account_count} 个账号"
+
+        async def warm_all_accounts() -> None:
+            logger.info("开始后台并行初始化全部账号 accounts=%d", warmup_account_count)
+            failures = await runtime_state.request_pool.prepare_all_accounts()
+            if failures:
+                runtime_state.ready_message = (
+                    f"已就绪，{warmup_account_count - len(failures)} 个账号可用，"
+                    f"{len(failures)} 个账号异常"
+                )
+                logger.warning("全部账号初始化完成，异常账号=%s", sorted(failures))
+            else:
+                runtime_state.ready_message = f"已就绪，{warmup_account_count} 个账号可用"
+                logger.info("全部账号后台初始化完成 accounts=%d", warmup_account_count)
+
+        account_warmup_task = asyncio.create_task(
+            warm_all_accounts(),
+            name="aistudio-account-warmup",
+        )
 
     logger.info(
         "Client initialized (browser=%s, port=%s, rotation=%s, accounts=%d)",
@@ -75,23 +110,38 @@ async def lifespan(app: FastAPI):
         len(account_store.list_accounts()),
     )
 
-    # 后台预热浏览器，避免首次请求延迟
-    warmup_task = None
-    async def _warmup():
+    try:
+        yield
+    finally:
+        logger.info("Shutting down")
+        runtime_state.ready = False
+        runtime_state.ready_message = "正在关闭..."
+        if account_warmup_task is not None and not account_warmup_task.done():
+            account_warmup_task.cancel()
+            await asyncio.gather(account_warmup_task, return_exceptions=True)
         try:
-            await client.warmup()
-        except Exception as e:
-            logger.warning("浏览器预热失败: %s", e)
-    warmup_task = asyncio.create_task(_warmup())
-
-    yield
-    logger.info("Shutting down")
-    if warmup_task and not warmup_task.done():
-        warmup_task.cancel()
-    runtime_state.client = None
-    runtime_state.busy_lock = None
-    runtime_state.account_service = None
-    runtime_state.rotator = None
+            await account_service.close()
+            logger.info("登录任务与登录浏览器已关闭")
+        except Exception:
+            logger.exception("关闭登录任务时出错")
+        try:
+            request_pool = runtime_state.request_pool
+            if request_pool is not None:
+                await request_pool.close()
+            logger.info("并发请求浏览器池已关闭")
+        except Exception:
+            logger.exception("关闭并发请求浏览器池时出错")
+        try:
+            await client.close()
+            logger.info("后台浏览器与工作线程已关闭")
+        except Exception:
+            logger.exception("关闭后台浏览器时出错")
+        runtime_state.client = None
+        runtime_state.busy_lock = None
+        runtime_state.request_pool = None
+        runtime_state.account_service = None
+        runtime_state.rotator = None
+        runtime_state.ready_message = "正在初始化..."
 
 
 app = FastAPI(title="AI Studio API", lifespan=lifespan)
@@ -156,6 +206,8 @@ async def auth_logout(request: Request, response: Response):
 
 
 def main():
+    import sys
+
     from aistudio_api.config import settings
 
     parser = argparse.ArgumentParser(description="AI Studio OpenAI-compatible API Server")
@@ -169,4 +221,10 @@ def main():
     import uvicorn
 
     logger.info("Starting server on port %s", args.port)
-    uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=args.port,
+        log_level="info",
+        log_config=None if sys.stderr is None else uvicorn.config.LOGGING_CONFIG,
+    )

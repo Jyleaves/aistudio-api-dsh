@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
-from fastapi import APIRouter, HTTPException, Depends
+import sys
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 
 from aistudio_api.application.api_service import health_response, stats_response
@@ -14,6 +15,8 @@ from aistudio_api.api.dependencies import get_runtime_state
 
 public_router = APIRouter()
 protected_router = APIRouter()
+
+_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 class ApiKeyCreateRequest(BaseModel):
@@ -99,9 +102,10 @@ def _settings_snapshot() -> dict:
 
 
 def _write_env_settings(values: dict[str, object]) -> None:
-    from aistudio_api.config import PROJECT_ROOT
+    from aistudio_api.config import USER_DATA_ROOT
 
-    env_path = PROJECT_ROOT / ".env"
+    env_path = USER_DATA_ROOT / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
     for field, value in values.items():
         env_name, kind = _SETTINGS_FIELDS[field]
@@ -135,8 +139,8 @@ async def save_settings(payload: SettingsPayload):
         return _settings_snapshot()
     if raw.get("browser_engine") not in (None, "chromium", "cloakbrowser", "camoufox"):
         raise HTTPException(400, detail="browser_engine 只能是 chromium、cloakbrowser 或 camoufox")
-    if raw.get("login_browser") not in (None, "auto", "system", "cloakbrowser"):
-        raise HTTPException(400, detail="login_browser 只能是 auto、system 或 cloakbrowser")
+    if raw.get("login_browser") not in (None, "auto", "chromium", "system", "cloakbrowser"):
+        raise HTTPException(400, detail="login_browser 只能是 chromium、auto、system 或 cloakbrowser")
     if raw.get("account_rotation_mode") not in (None, "round_robin", "lru", "least_rl"):
         raise HTTPException(400, detail="account_rotation_mode 无效")
     for name in ("port", "browser_port", "timeout_replay", "timeout_stream", "timeout_capture", "snapshot_cache_ttl", "snapshot_cache_max", "account_cooldown_seconds", "account_max_retries", "max_concurrency"):
@@ -171,10 +175,19 @@ def _run_git(*args: str, timeout: int = 45) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=timeout,
         check=False,
+        creationflags=_CREATE_NO_WINDOW,
     )
 
 
 def _update_check_sync() -> dict:
+    if getattr(sys, "frozen", False):
+        return {
+            "current": None,
+            "upstream": None,
+            "dirty": False,
+            "update_available": False,
+            "error": "桌面版更新检查将在 GitHub Releases 更新通道上线后启用",
+        }
     current = _run_git("rev-parse", "--short", "HEAD")
     upstream = _run_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     dirty = _run_git("status", "--porcelain")
@@ -204,12 +217,38 @@ def _update_check_sync() -> dict:
 
 @protected_router.get("/update/check")
 async def check_update():
-    return await asyncio.to_thread(_update_check_sync)
+    from aistudio_api.infrastructure.update_service import update_service
+
+    return await asyncio.to_thread(update_service.check)
+
+
+@protected_router.post("/update/download")
+async def download_update():
+    from aistudio_api.infrastructure.update_service import update_service
+
+    try:
+        return await asyncio.to_thread(update_service.start_download)
+    except RuntimeError as exc:
+        raise HTTPException(409, detail=str(exc))
+
+
+@protected_router.get("/update/status")
+async def update_status():
+    from aistudio_api.infrastructure.update_service import update_service
+
+    return update_service.status()
 
 
 @protected_router.post("/update")
 async def start_update():
-    from aistudio_api.config import PROJECT_ROOT, settings
+    from aistudio_api.infrastructure.update_service import update_service
+
+    if getattr(sys, "frozen", False):
+        try:
+            return await asyncio.to_thread(update_service.install)
+        except RuntimeError as exc:
+            raise HTTPException(409, detail=str(exc))
+    from aistudio_api.config import PROJECT_ROOT, USER_DATA_ROOT, settings
 
     check = await asyncio.to_thread(_update_check_sync)
     if check.get("error"):
@@ -219,7 +258,7 @@ async def start_update():
     script = PROJECT_ROOT / "update-aistudio-api.ps1"
     if not script.exists():
         raise HTTPException(404, detail="未找到更新脚本")
-    log_path = PROJECT_ROOT / "data" / "update.log"
+    log_path = USER_DATA_ROOT / "data" / "update.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     shell = "powershell.exe" if os.name == "nt" else "pwsh"
     with log_path.open("a", encoding="utf-8") as log_file:
@@ -281,9 +320,63 @@ async def health():
     return health_response()
 
 
+@protected_router.post("/app/shutdown")
+async def shutdown_desktop_app(
+    request: Request,
+    runtime_state=Depends(get_runtime_state),
+):
+    """Close the desktop window and let the normal lifespan cleanup run."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(403, detail="仅允许本机关闭桌面应用")
+    callback = getattr(runtime_state, "desktop_shutdown", None)
+    if callback is None:
+        raise HTTPException(409, detail="当前实例不是桌面应用或窗口尚未就绪")
+
+    def close_after_response() -> None:
+        try:
+            callback()
+        except Exception:
+            import logging
+
+            logging.getLogger("aistudio.server").exception("桌面应用正常关闭失败")
+
+    # Let FastAPI flush the JSON response before destroying the native window.
+    asyncio.get_running_loop().call_later(0.2, close_after_response)
+    return {"ok": True, "message": "Asteria 正在正常关闭"}
+
+
 @protected_router.get("/stats", response_model=StatsResponse)
 async def stats():
     return stats_response()
+
+
+@protected_router.get("/runtime/request-pool")
+async def request_pool_status(runtime_state=Depends(get_runtime_state)):
+    pool = runtime_state.request_pool
+    if pool is None:
+        return {
+            "enabled": False,
+            "max_concurrency": 0,
+            "active": 0,
+            "workers": 0,
+            "verified_workers": 0,
+            "saturated": False,
+            "ready_accounts": [],
+            "initializing_accounts": [],
+            "failed_accounts": {},
+        }
+    return {
+        "enabled": True,
+        "max_concurrency": int(getattr(pool, "max_concurrency", 0)),
+        "active": int(getattr(pool, "active_count", 0)),
+        "workers": int(getattr(pool, "worker_count", 0)),
+        "verified_workers": int(getattr(pool, "verified_worker_count", 0)),
+        "saturated": bool(getattr(pool, "saturated", False)),
+        "ready_accounts": sorted(getattr(pool, "ready_account_ids", set())),
+        "initializing_accounts": sorted(getattr(pool, "initializing_account_ids", set())),
+        "failed_accounts": dict(getattr(pool, "failed_account_errors", {})),
+    }
 
 
 # ========== 模型配置 API ==========
@@ -425,12 +518,13 @@ async def force_next_account(runtime_state=Depends(get_runtime_state)):
     if not all([account_service, client, busy_lock]):
         raise HTTPException(503, detail="服务未就绪")
 
-    result = await account_service.activate_account(
+    from aistudio_api.api.routes_accounts import activate_runtime_account
+
+    result = await activate_runtime_account(
+        account_service,
+        runtime_state,
         next_account.id,
-        client._session,
-        runtime_state.snapshot_cache,
-        busy_lock,
-        keep_snapshot_cache=False,
+        busy_lock=busy_lock,
     )
 
     if result is None:

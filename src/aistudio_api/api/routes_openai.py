@@ -17,6 +17,7 @@ from aistudio_api.infrastructure.gateway.model_catalog import (
     filter_gemini_models,
     model_metadata,
 )
+from aistudio_api.api.state import runtime_state
 
 from .dependencies import get_client
 from .schemas import ChatRequest, ImageRequest
@@ -79,8 +80,19 @@ def _model_cards(model_ids: list[str] | tuple[str, ...]) -> list[ModelCardRespon
 
 
 async def _available_model_ids(client: AIStudioClient, force: bool = False) -> list[str]:
+    # Listing models is a metadata operation. Starting the legacy control
+    # browser here made opening the desktop UI race with the independent API
+    # request browser. Use the maintained catalog unless the caller explicitly
+    # asks for a live refresh.
+    if not force:
+        return list(FALLBACK_GEMINI_MODELS)
     try:
-        discovered = await client.discover_models(force=force)
+        request_pool = runtime_state.request_pool
+        if request_pool is not None:
+            async with request_pool.lease() as lease:
+                discovered = await lease.client.discover_models(force=True)
+        else:
+            discovered = await client.discover_models(force=True)
     except Exception:
         discovered = []
     return filter_gemini_models(discovered) or list(FALLBACK_GEMINI_MODELS)

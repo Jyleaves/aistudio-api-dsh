@@ -17,13 +17,12 @@ from aistudio_api.api.schemas import ChatRequest, ImageRequest
 from aistudio_api.api.state import runtime_state
 from aistudio_api.application.api_service_common import (
     MAX_RETRIES,
+    acquire_request_client,
     build_inline_image_parts,
-    ensure_active_account,
     image_response,
     logger,
+    mark_request_worker_unhealthy,
     record_rotator_event,
-    require_busy_lock,
-    try_switch_account,
     validate_image_request_options,
 )
 from aistudio_api.application.chat_service import cleanup_files, normalize_chat_request, normalize_openai_tools
@@ -35,130 +34,160 @@ from aistudio_api.infrastructure.gateway.wire_types import AistudioContent, Aist
 
 
 async def handle_chat(req: ChatRequest, client: AIStudioClient):
-    busy_lock = require_busy_lock()
     last_error = None
+    attempted_accounts: set[str] = set()
+    normalized = normalize_chat_request(req.messages, req.model, tmp_dir=settings.tmp_dir)
+    model = normalized["model"]
+    tmp_files = list(normalized["cleanup_paths"])
+    tools = None if req.tools is None else (normalize_openai_tools(req.tools) or [])
 
-    for attempt in range(MAX_RETRIES):
-        async with busy_lock:
-            await ensure_active_account(attempt)
-            normalized = normalize_chat_request(req.messages, req.model, tmp_dir=settings.tmp_dir)
-            model = normalized["model"]
-            tmp_files = list(normalized["cleanup_paths"])
+    # Google AI Studio requires an additional wire-level tool_config flag when
+    # built-in tools are combined with client-side function declarations.
+    if req.tools is None:
+        from aistudio_api.infrastructure.gateway.request_rewriter import build_tools_from_names
 
-            try:
-                logger.info(
-                    "Chat: model=%s, contents=%s, capture_prompt=%s..., images=%s, stream=%s, attempt=%d",
-                    model,
-                    len(normalized["contents"]),
-                    normalized["capture_prompt"][:50],
-                    len(normalized["capture_images"]),
-                    req.stream,
-                    attempt + 1,
-                )
-                tools = None if req.tools is None else (normalize_openai_tools(req.tools) or [])
+        model_defaults = resolve_model_defaults(model)
+        if model_defaults.default_tools:
+            tools = build_tools_from_names(
+                model_defaults.default_tools,
+                model=model,
+                is_image_model=model_defaults.is_image_model,
+            )
 
-                # Google AI Studio requires an additional wire-level
-                # tool_config flag when built-in tools are combined with
-                # client-side function declarations. Until that field is
-                # encoded here, keep the built-in defaults for requests that
-                # do not carry client-side function tools (for example, a
-                # plain OpenAI-compatible chat request).
-                if req.tools is None:
-                    from aistudio_api.infrastructure.gateway.request_rewriter import build_tools_from_names
+    if req.stream:
+        include_usage = True
+        if req.stream_options is not None:
+            include_usage = req.stream_options.include_usage
+        return _build_streaming_response(
+            client=client,
+            capture_prompt=normalized["capture_prompt"],
+            model=model,
+            capture_images=normalized["capture_images"] if normalized["capture_images"] else None,
+            contents=normalized["contents"],
+            system_instruction=normalized["system_instruction"],
+            cleanup_paths=tmp_files,
+            include_usage=include_usage,
+            temperature=req.temperature,
+            top_p=req.top_p,
+            top_k=req.top_k,
+            max_tokens=req.max_tokens,
+            tools=tools,
+        )
 
-                    model_defaults = resolve_model_defaults(model)
-                    if model_defaults.default_tools:
-                        tools = build_tools_from_names(
-                            model_defaults.default_tools,
-                            model=model,
-                            is_image_model=model_defaults.is_image_model,
-                        )
-
-                if req.stream:
-                    include_usage = True
-                    if req.stream_options is not None:
-                        include_usage = req.stream_options.include_usage
-                    return _build_streaming_response(
-                        client=client,
-                        capture_prompt=normalized["capture_prompt"],
+    try:
+        for attempt in range(MAX_RETRIES):
+            async with acquire_request_client(
+                client,
+                attempt=attempt,
+                exclude_account_ids=attempted_accounts,
+            ) as execution:
+                request_client = execution.client
+                account_id = execution.account_id
+                if account_id:
+                    attempted_accounts.add(account_id)
+                try:
+                    logger.info(
+                        "Chat: model=%s, contents=%s, capture_prompt=%s..., images=%s, stream=%s, attempt=%d, worker=%s",
+                        model,
+                        len(normalized["contents"]),
+                        normalized["capture_prompt"][:50],
+                        len(normalized["capture_images"]),
+                        req.stream,
+                        attempt + 1,
+                        execution.worker_id,
+                    )
+                    generation_kwargs = dict(
                         model=model,
+                        capture_prompt=normalized["capture_prompt"],
                         capture_images=normalized["capture_images"] if normalized["capture_images"] else None,
                         contents=normalized["contents"],
-                        system_instruction=normalized["system_instruction"],
-                        cleanup_paths=tmp_files,
-                        include_usage=include_usage,
+                        system_instruction_content=(
+                            AistudioContent(role="user", parts=[AistudioPart(text=normalized["system_instruction"])])
+                            if normalized["system_instruction"]
+                            else None
+                        ),
                         temperature=req.temperature,
                         top_p=req.top_p,
                         top_k=req.top_k,
                         max_tokens=req.max_tokens,
                         tools=tools,
+                        sanitize_plain_text=True,
                     )
+                    output = await request_client.generate_content(**generation_kwargs)
+                    if (
+                        not output.text
+                        and not output.function_calls
+                        and output.thinking
+                        and (req.max_tokens or 0) < 512
+                    ):
+                        logger.info(
+                            "OpenAI-compatible response used small token budget on hidden reasoning; "
+                            "retrying with visible-output reserve"
+                        )
+                        output = await request_client.generate_content(
+                            **{**generation_kwargs, "max_tokens": 512}
+                        )
 
-                output = await client.generate_content(
-                    model=model,
-                    capture_prompt=normalized["capture_prompt"],
-                    capture_images=normalized["capture_images"] if normalized["capture_images"] else None,
-                    contents=normalized["contents"],
-                    system_instruction_content=(
-                        AistudioContent(role="user", parts=[AistudioPart(text=normalized["system_instruction"])])
-                        if normalized["system_instruction"]
-                        else None
-                    ),
-                    temperature=req.temperature,
-                    top_p=req.top_p,
-                    top_k=req.top_k,
-                    max_tokens=req.max_tokens,
-                    tools=tools,
-                    sanitize_plain_text=True,
-                )
-
-                record_rotator_event("success")
-                runtime_state.record(model, "success", output.usage)
-                return chat_completion_response(
-                    model=model,
-                    content=output.text,
-                    thinking=output.thinking,
-                    usage=output.usage,
-                    function_calls=output.function_calls,
-                )
-            except UsageLimitExceeded as exc:
-                runtime_state.record(model, "rate_limited")
-                last_error = exc
-
-                record_rotator_event("rate_limited")
-                if await try_switch_account():
-                    logger.info("429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
-                    continue
-                logger.warning("429 限流，无法切换账号")
-                raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
-            except AistudioError as exc:
-                runtime_state.record(model, "errors")
-                record_rotator_event("error")
-                raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
-            except Exception as exc:
-                runtime_state.record(model, "errors")
-                record_rotator_event("error")
-                logger.error("Chat error: %s", exc, exc_info=True)
-                raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
-            finally:
-                if not req.stream:
-                    cleanup_files(tmp_files)
-
-    raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+                    execution.succeeded = True
+                    record_rotator_event("success", account_id)
+                    runtime_state.record(model, "success", output.usage)
+                    return chat_completion_response(
+                        model=model,
+                        content=output.text,
+                        thinking=output.thinking,
+                        usage=output.usage,
+                        function_calls=output.function_calls,
+                    )
+                except UsageLimitExceeded as exc:
+                    runtime_state.record(model, "rate_limited")
+                    last_error = exc
+                    record_rotator_event("rate_limited", account_id)
+                    if attempt < MAX_RETRIES - 1:
+                        logger.info("429 限流，改用其他可用账号重试 %d/%d", attempt + 1, MAX_RETRIES)
+                        continue
+                    raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+                except AuthError as exc:
+                    last_error = exc
+                    mark_request_worker_unhealthy(execution.worker_id)
+                    if attempt < MAX_RETRIES - 1:
+                        logger.warning("工作浏览器鉴权失败，重建后重试 %d/%d", attempt + 1, MAX_RETRIES)
+                        continue
+                    runtime_state.record(model, "errors")
+                    record_rotator_event("error", account_id)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
+                except AistudioError as exc:
+                    runtime_state.record(model, "errors")
+                    record_rotator_event("error", account_id)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
+                except Exception as exc:
+                    runtime_state.record(model, "errors")
+                    record_rotator_event("error", account_id)
+                    logger.error("Chat error: %s", exc, exc_info=True)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
+        raise HTTPException(429, detail={"message": str(last_error), "type": "rate_limit_exceeded"}) from last_error
+    finally:
+        cleanup_files(tmp_files)
 
 
 async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
     validate_image_request_options(size=req.size, n=req.n)
 
-    busy_lock = require_busy_lock()
     last_error = None
+    attempted_accounts: set[str] = set()
 
     for attempt in range(MAX_RETRIES):
-        async with busy_lock:
-            await ensure_active_account(attempt)
+        async with acquire_request_client(
+            client,
+            attempt=attempt,
+            exclude_account_ids=attempted_accounts,
+        ) as execution:
+            request_client = execution.client
+            account_id = execution.account_id
+            if account_id:
+                attempted_accounts.add(account_id)
             try:
                 logger.info("Image: model=%s, prompt=%s..., attempt=%d", req.model, req.prompt[:50], attempt + 1)
-                output = await client.generate_image(
+                output = await request_client.generate_image(
                     prompt=req.prompt,
                     model=req.model,
                     size=req.size,
@@ -166,26 +195,35 @@ async def handle_image_generation(req: ImageRequest, client: AIStudioClient):
                     image_search=req.image_search,
                     use_default_tools=not bool({"google_search", "image_search"} & req.model_fields_set),
                 )
-                record_rotator_event("success")
+                execution.succeeded = True
+                record_rotator_event("success", account_id)
                 runtime_state.record(req.model, "success", output.usage)
                 return image_response(output)
             except UsageLimitExceeded as exc:
                 runtime_state.record(req.model, "rate_limited")
                 last_error = exc
 
-                record_rotator_event("rate_limited")
-                if await try_switch_account():
-                    logger.info("Image 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
+                record_rotator_event("rate_limited", account_id)
+                if attempt < MAX_RETRIES - 1:
+                    logger.info("Image 429 限流，改用其他可用账号重试 %d/%d", attempt + 1, MAX_RETRIES)
                     continue
-                logger.warning("Image 429 限流，无法切换账号")
                 raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+            except AuthError as exc:
+                last_error = exc
+                mark_request_worker_unhealthy(execution.worker_id)
+                if attempt < MAX_RETRIES - 1:
+                    logger.warning("图片工作浏览器鉴权失败，重建后重试 %d/%d", attempt + 1, MAX_RETRIES)
+                    continue
+                runtime_state.record(req.model, "errors")
+                record_rotator_event("error", account_id)
+                raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
             except AistudioError as exc:
                 runtime_state.record(req.model, "errors")
-                record_rotator_event("error")
+                record_rotator_event("error", account_id)
                 raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
             except Exception as exc:
                 runtime_state.record(req.model, "errors")
-                record_rotator_event("error")
+                record_rotator_event("error", account_id)
                 logger.error("Image error: %s", exc, exc_info=True)
                 raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
 
@@ -203,15 +241,22 @@ async def handle_image_edit(
 ):
     validate_image_request_options(size=size, n=n)
 
-    busy_lock = require_busy_lock()
     image_parts = await build_inline_image_parts(image_files)
     request_contents = [AistudioContent(role="user", parts=[*image_parts, AistudioPart(text=prompt)])]
 
     last_error = None
+    attempted_accounts: set[str] = set()
 
     for attempt in range(MAX_RETRIES):
-        async with busy_lock:
-            await ensure_active_account(attempt)
+        async with acquire_request_client(
+            client,
+            attempt=attempt,
+            exclude_account_ids=attempted_accounts,
+        ) as execution:
+            request_client = execution.client
+            account_id = execution.account_id
+            if account_id:
+                attempted_accounts.add(account_id)
             try:
                 logger.info(
                     "Image Edit: model=%s, prompt=%s..., images=%d, attempt=%d",
@@ -220,32 +265,41 @@ async def handle_image_edit(
                     len(image_parts),
                     attempt + 1,
                 )
-                output = await client.generate_image(
+                output = await request_client.generate_image(
                     prompt=prompt,
                     model=model,
                     size=size,
                     contents=request_contents,
                 )
-                record_rotator_event("success")
+                execution.succeeded = True
+                record_rotator_event("success", account_id)
                 runtime_state.record(model, "success", output.usage)
                 return image_response(output)
             except UsageLimitExceeded as exc:
                 runtime_state.record(model, "rate_limited")
                 last_error = exc
 
-                record_rotator_event("rate_limited")
-                if await try_switch_account():
-                    logger.info("Image Edit 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
+                record_rotator_event("rate_limited", account_id)
+                if attempt < MAX_RETRIES - 1:
+                    logger.info("Image Edit 429 限流，改用其他可用账号重试 %d/%d", attempt + 1, MAX_RETRIES)
                     continue
-                logger.warning("Image Edit 429 限流，无法切换账号")
                 raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_exceeded"}) from exc
+            except AuthError as exc:
+                last_error = exc
+                mark_request_worker_unhealthy(execution.worker_id)
+                if attempt < MAX_RETRIES - 1:
+                    logger.warning("图片编辑工作浏览器鉴权失败，重建后重试 %d/%d", attempt + 1, MAX_RETRIES)
+                    continue
+                runtime_state.record(model, "errors")
+                record_rotator_event("error", account_id)
+                raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
             except AistudioError as exc:
                 runtime_state.record(model, "errors")
-                record_rotator_event("error")
+                record_rotator_event("error", account_id)
                 raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
             except Exception as exc:
                 runtime_state.record(model, "errors")
-                record_rotator_event("error")
+                record_rotator_event("error", account_id)
                 logger.error("Image Edit error: %s", exc, exc_info=True)
                 raise HTTPException(500, detail={"message": str(exc), "type": "server_error"}) from exc
 
@@ -269,21 +323,23 @@ def _build_streaming_response(
     tools: list[list] | None = None,
 ) -> StreamingResponse:
     async def stream_response():
-        busy_lock = runtime_state.busy_lock
-        if busy_lock is None:
-            yield sse_error("Server not ready")
-            cleanup_files(cleanup_paths)
-            return
-
-        async with busy_lock:
-            try:
-                chat_id = new_chat_id()
-                final_usage = None
-                saw_tool_calls = False
-                for stream_attempt in range(MAX_RETRIES):
+        account_id = None
+        attempted_accounts: set[str] = set()
+        try:
+            chat_id = new_chat_id()
+            final_usage = None
+            saw_tool_calls = False
+            for stream_attempt in range(MAX_RETRIES):
+                async with acquire_request_client(
+                    client,
+                    attempt=stream_attempt,
+                    exclude_account_ids=attempted_accounts,
+                ) as execution:
+                    stream_client = execution.client
+                    account_id = execution.account_id
                     try:
                         has_yielded_data = False
-                        async for event_type, text in client.stream_generate_content(
+                        async for event_type, text in stream_client.stream_generate_content(
                             model=model,
                             capture_prompt=capture_prompt,
                             capture_images=capture_images,
@@ -319,38 +375,42 @@ def _build_streaming_response(
                         break
                     except UsageLimitExceeded:
                         runtime_state.record(model, "rate_limited")
-                        record_rotator_event("rate_limited")
-                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_account():
-                            logger.warning("Stream 429 限流，已切换账号，重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
+                        record_rotator_event("rate_limited", account_id)
+                        if account_id:
+                            attempted_accounts.add(account_id)
+                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1:
+                            logger.warning("Stream 429 限流，改用其他可用账号重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
                             continue
                         raise
                     except RequestError as exc:
                         if exc.status == 204 and stream_attempt == 0:
                             logger.warning("Stream 收到 204，清理 snapshot 缓存后重试一次")
-                            client.clear_snapshot_cache()
+                            stream_client.clear_snapshot_cache()
                             continue
                         raise
                     except AuthError as exc:
-                        if stream_attempt == 0:
-                            logger.warning("Stream 鉴权异常，清理 snapshot 缓存后重试一次: %s", exc)
-                            client.clear_snapshot_cache()
+                        mark_request_worker_unhealthy(execution.worker_id)
+                        if not has_yielded_data and stream_attempt < MAX_RETRIES - 1:
+                            logger.warning("Stream 工作浏览器鉴权异常，重建后重试 %d/%d: %s", stream_attempt + 1, MAX_RETRIES, exc)
+                            stream_client.clear_snapshot_cache()
                             continue
                         raise
 
-                record_rotator_event("success")
-                runtime_state.record(model, "success", final_usage)
-                yield sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage)
-                if include_usage:
-                    yield sse_usage_chunk(chat_id, model, final_usage)
-                yield "data: [DONE]\n\n"
-            except Exception as exc:
-                logger.error("Stream error: %s", exc, exc_info=True)
-                if not isinstance(exc, UsageLimitExceeded):
-                    record_rotator_event("error")
-                runtime_state.record(model, "errors")
-                yield sse_error(str(exc))
-            finally:
-                cleanup_files(cleanup_paths)
+            execution.succeeded = True
+            record_rotator_event("success", account_id)
+            runtime_state.record(model, "success", final_usage)
+            yield sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage)
+            if include_usage:
+                yield sse_usage_chunk(chat_id, model, final_usage)
+            yield "data: [DONE]\n\n"
+        except Exception as exc:
+            logger.error("Stream error: %s", exc, exc_info=True)
+            if not isinstance(exc, UsageLimitExceeded):
+                record_rotator_event("error", account_id)
+            runtime_state.record(model, "errors")
+            yield sse_error(str(exc))
+        finally:
+            cleanup_files(cleanup_paths)
 
     return StreamingResponse(
         stream_response(),

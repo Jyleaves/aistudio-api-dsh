@@ -2,7 +2,9 @@ import asyncio
 import sys
 import types
 
-sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
+import pytest
+
+sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: None))
 playwright_module = sys.modules.setdefault("playwright", types.ModuleType("playwright"))
 async_api_module = sys.modules.setdefault("playwright.async_api", types.ModuleType("playwright.async_api"))
 setattr(playwright_module, "async_api", async_api_module)
@@ -215,36 +217,80 @@ def test_login_session_fails_immediately_when_browser_window_is_closed(monkeypat
     assert store.saved is False
 
 
-def test_build_login_url_uses_addsession_to_keep_account_chooser():
+def test_build_login_url_opens_google_account_chooser_directly():
     service = LoginService()
     url = service._build_login_url()
-    assert url.startswith("https://accounts.google.com/AddSession?")
-    assert "continue=https%3A%2F%2Faistudio.google.com" in url
+    assert url.startswith("https://accounts.google.com/v3/signin/accountchooser?")
+    assert "continue=https%3A%2F%2Faistudio.google.com%2Fapp%2Fprompts%2Fnew_chat" in url
+    assert "followup=https%3A%2F%2Faistudio.google.com%2Fapp%2Fprompts%2Fnew_chat" in url
+    assert "flowName=GlifWebSignIn" in url
+    assert "flowEntry=ServiceLogin" in url
 
     localized = service._build_login_url(ui_locale="zh-CN")
     assert "hl=zh-CN" in localized
 
 
-def test_start_login_rejects_second_concurrent_login():
-    service = LoginService()
-    assert service._login_lock.locked() is False
+def test_login_entry_keeps_loaded_google_form_when_original_navigation_times_out():
+    class RedirectedGooglePage:
+        url = ""
+
+        async def goto(self, url, **_kwargs):
+            self.url = "https://accounts.google.com/v3/signin/identifier?continue=test"
+            raise RuntimeError("Timeout 30000ms exceeded")
+
+        async def evaluate(self, _script):
+            return "interactive"
 
     async def scenario():
-        await service._login_lock.acquire()
-        try:
-            store = FakeAccountStore()
-            await service.start_login(store)
-        finally:
-            service._login_lock.release()
+        recovered = await LoginService._goto_login_entry(
+            RedirectedGooglePage(),
+            "https://accounts.google.com/v3/signin/accountchooser?continue=test",
+        )
+        assert recovered is True
 
-    try:
-        asyncio.run(scenario())
-        raise AssertionError("expected RuntimeError")
-    except RuntimeError as exc:
-        assert "已有登录窗口打开" in str(exc)
+    asyncio.run(scenario())
 
 
-def test_clear_login_profile_removes_dir_and_respects_lock(tmp_path, monkeypatch):
+def test_login_entry_does_not_hide_timeout_before_google_form_is_usable():
+    class BrokenPage:
+        url = "https://accounts.google.com/v3/signin/identifier?continue=test"
+
+        async def goto(self, url, **_kwargs):
+            raise RuntimeError("Timeout 30000ms exceeded")
+
+        async def evaluate(self, _script):
+            return "loading"
+
+    async def scenario():
+        with pytest.raises(RuntimeError, match="Timeout 30000ms"):
+            await LoginService._goto_login_entry(
+                BrokenPage(),
+                "https://accounts.google.com/v3/signin/accountchooser?continue=test",
+            )
+
+    asyncio.run(scenario())
+
+
+def test_start_login_allocates_isolated_profile_for_concurrent_login(tmp_path, monkeypatch):
+    monkeypatch.setattr(login_module.settings, "login_profile_dir", str(tmp_path / "login-profile"))
+    service = LoginService()
+
+    async def scenario():
+        store = FakeAccountStore()
+        first = await service.start_login(store)
+        second = await service.start_login(store)
+        # 每次登录都用独立的全新临时 profile：复用带会话的持久 profile
+        # 会被 Google 的自动续登（pli=1）打断用户输入。
+        assert service._profile_users[first] == tmp_path / "login-profile" / "parallel" / first
+        assert service._profile_users[second] == tmp_path / "login-profile" / "parallel" / second
+        for task in service._tasks.values():
+            task.cancel()
+        await asyncio.gather(*service._tasks.values(), return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_clear_login_profile_removes_dir_and_respects_active_session(tmp_path, monkeypatch):
     profile = tmp_path / "login-profile"
     profile.mkdir()
     (profile / "Default").mkdir()
@@ -258,14 +304,14 @@ def test_clear_login_profile_removes_dir_and_respects_lock(tmp_path, monkeypatch
     profile.mkdir()
 
     async def locked_scenario():
-        await service._login_lock.acquire()
+        service._profile_users["login_test"] = profile
         try:
             await service.clear_login_profile()
             raise AssertionError("expected RuntimeError")
         except RuntimeError as exc:
             assert "登录窗口打开中" in str(exc)
         finally:
-            service._login_lock.release()
+            service._profile_users.clear()
 
     asyncio.run(locked_scenario())
     assert profile.exists()
@@ -341,3 +387,20 @@ def test_delete_account_survives_locked_profile_dir(tmp_path, monkeypatch):
     assert store.delete_account(meta.id) is True
     assert store.get_account(meta.id) is None
     assert list(tmp_path.glob(".deleted-*")) != []
+
+
+def test_saving_new_account_preserves_existing_active_account(tmp_path):
+    from aistudio_api.infrastructure.account.account_store import AccountStore
+
+    store = AccountStore(tmp_path)
+    first = store.save_account(
+        name="first", email="first@example.com",
+        storage_state={"cookies": [], "origins": []},
+    )
+    second = store.save_account(
+        name="second", email="second@example.com",
+        storage_state={"cookies": [], "origins": []},
+    )
+
+    assert store.get_active_account().id == first.id
+    assert second.id != first.id

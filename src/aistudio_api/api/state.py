@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -14,10 +15,16 @@ from aistudio_api.infrastructure.gateway.client import AIStudioClient
 class RuntimeState:
     client: AIStudioClient | None = None
     busy_lock: asyncio.Semaphore | None = None
+    request_pool: object | None = None
     browser_port: int = 9222
     snapshot_cache: object | None = None  # SnapshotCache 实例
     account_service: object | None = None  # AccountService 实例
     rotator: object | None = None  # AccountRotator 实例
+    ready: bool = False
+    ready_message: str = "正在初始化..."
+    account_switching: bool = False
+    login_in_progress: bool = False
+    desktop_shutdown: Callable[[], None] | None = None
     anthropic_tool_context: dict[str, dict] = field(default_factory=dict)
     model_stats: dict[str, dict] = field(
         default_factory=lambda: defaultdict(

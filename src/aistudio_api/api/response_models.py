@@ -195,6 +195,8 @@ class GeminiGenerateContentResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     busy: bool
+    ready: bool = True
+    message: str = "已就绪"
 
 
 class ModelStatsResponse(BaseModel):

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
 
 from aistudio_api.infrastructure.account.account_store import AccountStore, AccountMeta
@@ -53,9 +55,13 @@ class AccountService:
         """获取登录状态。"""
         return self._login.get_status(session_id)
 
-    async def clear_login_profile(self) -> None:
-        """清除持久化登录档案（Google 账号选择器列表）。"""
-        await self._login.clear_login_profile()
+    def is_login_active(self) -> bool:
+        """是否仍有进行中（pending）的登录会话。"""
+        return self._login.has_pending_session()
+
+    async def close(self) -> None:
+        """停止尚未完成的登录流程并关闭对应浏览器。"""
+        await self._login.close()
 
     async def activate_account(
         self,
@@ -82,6 +88,9 @@ class AccountService:
         if account is None:
             return None
 
+        started = time.perf_counter()
+        logger.info("[probe] account.activate start account_id=%s", account_id)
+
         async def _do_switch():
             # 获取 auth 路径
             auth_path = self._store.get_auth_path_optional(account_id, require_exists=False)
@@ -91,7 +100,24 @@ class AccountService:
 
             # 切换 BrowserSession 的 auth
             await browser_session.switch_auth(str(auth_path))
+            logger.info("[probe] account.activate switch_auth elapsed=%.3fs", time.perf_counter() - started)
+
+            # 登录流程刚复制的 profile 带 profile.fresh 标记，必须保留——
+            # 里面是刚验证过的 Google 会话；误删它会让后台浏览器以未登录
+            # 状态启动。旧 profile（无标记）也不再强制删除：会话是否有效
+            # 由 BrowserSession 启动时的会话 cookie 校验判断，过期会自动
+            # 回退到 auth.json 重建，无需在此销毁整个 profile。
+            profile_path = self._store.get_profile_path(account_id)
+            if profile_path is not None:
+                fresh_marker = profile_path.parent / "profile.fresh"
+                if fresh_marker.exists():
+                    try:
+                        fresh_marker.unlink()
+                    except OSError:
+                        pass
+                    logger.info("[probe] account.activate fresh_profile_kept")
             await browser_session.ensure_context()
+            logger.info("[probe] account.activate ensure_context elapsed=%.3fs", time.perf_counter() - started)
 
             # snapshot 按账号命名空间隔离。切号时不再清空其他账号的缓存，
             # 这样大 PDF 在账号轮换后可以复用该账号自己的已捕获请求。
@@ -105,6 +131,7 @@ class AccountService:
             self._store.set_active_account(account_id)
 
             logger.info("已切换到账号: %s (%s)", account_id, account.name)
+            logger.info("[probe] account.activate total=%.3fs result=ready", time.perf_counter() - started)
             return account
 
         # 获取 busy_lock 确保无请求在飞行中
@@ -140,7 +167,13 @@ class AccountService:
                 logger.info("已释放后台浏览器以删除账号 %s", account_id)
             except Exception as exc:
                 logger.warning("释放后台浏览器失败，将尝试延后清理账号目录: %s", exc)
-        self._store.delete_account(account_id)
+        # Removing a Chromium profile can involve thousands of small files.
+        # Keep that filesystem work off the API event loop so the desktop UI
+        # and unrelated requests remain responsive during logout.
+        deleted = await asyncio.to_thread(self._store.delete_account, account_id)
+        if not deleted:
+            logger.error("退出登录时删除账号失败: %s", account_id)
+            raise RuntimeError("账号目录仍被占用，退出登录失败，请关闭相关浏览器窗口后重试")
         remaining = len(self._store.list_accounts())
         profile_cleared = False
         message = "已退出登录并删除账号记录"

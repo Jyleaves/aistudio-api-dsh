@@ -498,6 +498,10 @@ def normalize_anthropic_request(req, tmp_dir: str = "/tmp", tool_context: dict[s
     flush_tool_parts()
     capture_prompt = "\n".join(text for text in capture_texts if text) or "你好"
     model = req.model
+    # Anthropic clients only request visible thinking when `thinking` is
+    # explicitly enabled. Otherwise keep AI Studio reasoning minimal so a
+    # small max_tokens value is not consumed entirely by hidden reasoning.
+    thinking_level = ThinkingLevel.HIGH if req.thinking else ThinkingLevel.MINIMAL
 
     return {
         "model": model,
@@ -515,6 +519,9 @@ def normalize_anthropic_request(req, tmp_dir: str = "/tmp", tool_context: dict[s
         "top_p": req.top_p,
         "top_k": req.top_k,
         "max_tokens": req.max_tokens,
+        "generation_config_overrides": {
+            "thinking_config": AistudioThinkingConfig(level=thinking_level, mode=1).to_wire(),
+        },
     }
 
 

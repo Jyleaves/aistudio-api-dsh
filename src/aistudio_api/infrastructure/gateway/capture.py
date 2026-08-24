@@ -45,7 +45,7 @@ class RequestCaptureService:
         contents: list[AistudioContent] | None = None,
         force_refresh: bool = False,
     ) -> CapturedRequest | None:
-        template = await self._ensure_template(model)
+        template = await self._ensure_template(model, force_refresh=force_refresh)
         # 先只走 inlineData 路径，避免 fileData/Drive 上传链路干扰主流程。
         rewritten_contents = contents
         snapshot_contents = rewritten_contents or [self._build_capture_content(prompt=prompt, images=images)]
@@ -66,8 +66,8 @@ class RequestCaptureService:
         )
         return captured
 
-    async def _ensure_template(self, model: str) -> CapturedRequest:
-        if model in self._templates:
+    async def _ensure_template(self, model: str, *, force_refresh: bool = False) -> CapturedRequest:
+        if model in self._templates and not force_refresh:
             return self._templates[model]
 
         captured = await self._session.capture_template(model)

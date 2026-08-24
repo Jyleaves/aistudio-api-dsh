@@ -23,16 +23,23 @@ from aistudio_api.api.schemas import AnthropicMessageRequest
 from aistudio_api.api.state import runtime_state
 from aistudio_api.application.api_service_common import (
     MAX_RETRIES,
-    ensure_active_account,
+    acquire_request_client,
     logger,
+    mark_request_worker_unhealthy,
     record_rotator_event,
-    require_busy_lock,
-    try_switch_account,
 )
 from aistudio_api.application.chat_service import cleanup_files, normalize_anthropic_request
 from aistudio_api.domain.errors import AistudioError, AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.config import settings
+
+
+class _AsyncNullContext:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
 
 
 def _anthropic_tool_names(req: AnthropicMessageRequest) -> set[str]:
@@ -166,8 +173,6 @@ def _prepare_anthropic_function_calls(function_calls: list[dict] | None) -> list
 
 
 async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStudioClient):
-    busy_lock = require_busy_lock()
-
     normalized = normalize_anthropic_request(
         req,
         tmp_dir=settings.tmp_dir,
@@ -186,20 +191,29 @@ async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStud
         )
 
     last_error = None
+    attempted_accounts: set[str] = set()
     try:
         for attempt in range(MAX_RETRIES):
-            async with busy_lock:
-                await ensure_active_account(attempt)
+            async with acquire_request_client(
+                client,
+                attempt=attempt,
+                exclude_account_ids=attempted_accounts,
+            ) as execution:
+                request_client = execution.client
+                account_id = execution.account_id
+                if account_id:
+                    attempted_accounts.add(account_id)
                 try:
                     logger.info(
-                        "Anthropic messages: model=%s, contents=%s, capture_prompt=%s..., stream=%s, attempt=%d",
+                        "Anthropic messages: model=%s, contents=%s, capture_prompt=%s..., stream=%s, attempt=%d, worker=%s",
                         model,
                         len(normalized["contents"]),
                         normalized["capture_prompt"][:50],
                         req.stream,
                         attempt + 1,
+                        execution.worker_id,
                     )
-                    output = await client.generate_content(
+                    generation_kwargs = dict(
                         model=model,
                         capture_prompt=normalized["capture_prompt"],
                         capture_images=normalized["capture_images"],
@@ -209,11 +223,32 @@ async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStud
                         top_p=normalized["top_p"],
                         top_k=normalized["top_k"],
                         max_tokens=normalized["max_tokens"],
+                        generation_config_overrides=normalized["generation_config_overrides"],
                         tools=normalized["tools"],
                         sanitize_plain_text=not bool(normalized["tools"]),
                     )
+                    output = await request_client.generate_content(**generation_kwargs)
 
-                    record_rotator_event("success")
+                    # Gemini can spend a very small Anthropic max_tokens budget
+                    # entirely on hidden reasoning and return HTTP 200 with no
+                    # visible content. Retry once on the same isolated worker
+                    # only for that exact outcome. Normal responses, tool calls,
+                    # explicit thinking requests, and failures are unaffected.
+                    if (
+                        not output.text
+                        and not output.function_calls
+                        and output.thinking
+                        and not req.thinking
+                        and (normalized["max_tokens"] or 0) < 512
+                    ):
+                        logger.info(
+                            "Anthropic response used small token budget on hidden reasoning; retrying with visible-output reserve"
+                        )
+                        retry_kwargs = {**generation_kwargs, "max_tokens": 512}
+                        output = await request_client.generate_content(**retry_kwargs)
+
+                    execution.succeeded = True
+                    record_rotator_event("success", account_id)
                     runtime_state.record(model, "success", output.usage)
                     raw_function_calls = output.function_calls
                     if not raw_function_calls and not output.text and output.candidates:
@@ -233,18 +268,27 @@ async def handle_anthropic_messages(req: AnthropicMessageRequest, client: AIStud
                 except UsageLimitExceeded as exc:
                     runtime_state.record(model, "rate_limited")
                     last_error = exc
-                    record_rotator_event("rate_limited")
-                    if await try_switch_account():
-                        logger.info("Anthropic 429 限流，已切换账号，重试 %d/%d", attempt + 1, MAX_RETRIES)
+                    record_rotator_event("rate_limited", account_id)
+                    if attempt < MAX_RETRIES - 1:
+                        logger.info("Anthropic 429 限流，改用其他可用账号重试 %d/%d", attempt + 1, MAX_RETRIES)
                         continue
                     raise HTTPException(429, detail={"message": str(exc), "type": "rate_limit_error"}) from exc
+                except AuthError as exc:
+                    last_error = exc
+                    mark_request_worker_unhealthy(execution.worker_id)
+                    if attempt < MAX_RETRIES - 1:
+                        logger.warning("Anthropic 工作浏览器鉴权失败，重建后重试 %d/%d", attempt + 1, MAX_RETRIES)
+                        continue
+                    runtime_state.record(model, "errors")
+                    record_rotator_event("error", account_id)
+                    raise HTTPException(500, detail={"message": str(exc), "type": "api_error"}) from exc
                 except AistudioError as exc:
                     runtime_state.record(model, "errors")
-                    record_rotator_event("error")
+                    record_rotator_event("error", account_id)
                     raise HTTPException(500, detail={"message": str(exc), "type": "api_error"}) from exc
                 except Exception as exc:
                     runtime_state.record(model, "errors")
-                    record_rotator_event("error")
+                    record_rotator_event("error", account_id)
                     logger.error("Anthropic messages error: %s", exc, exc_info=True)
                     raise HTTPException(500, detail={"message": str(exc), "type": "api_error"}) from exc
 
@@ -268,7 +312,7 @@ def _build_anthropic_streaming_response(
             cleanup_files(cleanup_paths)
             return
 
-        async with busy_lock:
+        async with _AsyncNullContext():
             try:
                 message_id = new_message_id()
                 content_block_index = 0
@@ -278,6 +322,8 @@ def _build_anthropic_streaming_response(
                 saw_tool_use = False
                 thinking_fragments: list[str] = []
                 latest_thought_signature = ""
+                account_id = None
+                attempted_accounts: set[str] = set()
 
                 yield anthropic_sse(
                     "message_start",
@@ -297,9 +343,17 @@ def _build_anthropic_streaming_response(
                 )
 
                 for stream_attempt in range(MAX_RETRIES):
+                    lease_context = acquire_request_client(
+                        client,
+                        attempt=stream_attempt,
+                        exclude_account_ids=attempted_accounts,
+                    )
+                    execution = await lease_context.__aenter__()
+                    stream_client = execution.client
+                    account_id = execution.account_id
                     try:
                         has_yielded_model_data = False
-                        async for event_type, text in client.stream_generate_content(
+                        async for event_type, text in stream_client.stream_generate_content(
                             model=model,
                             capture_prompt=normalized["capture_prompt"],
                             capture_images=normalized["capture_images"],
@@ -309,6 +363,7 @@ def _build_anthropic_streaming_response(
                             top_p=normalized["top_p"],
                             top_k=normalized["top_k"],
                             max_tokens=normalized["max_tokens"],
+                            generation_config_overrides=normalized["generation_config_overrides"],
                             tools=normalized["tools"],
                             sanitize_plain_text=not bool(normalized["tools"]),
                             force_refresh_capture=stream_attempt > 0,
@@ -383,23 +438,28 @@ def _build_anthropic_streaming_response(
                         break
                     except UsageLimitExceeded as exc:
                         runtime_state.record(model, "rate_limited")
-                        record_rotator_event("rate_limited")
-                        if not has_yielded_model_data and stream_attempt < MAX_RETRIES - 1 and await try_switch_account():
-                            logger.warning("Anthropic stream 429 限流，已切换账号，重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
+                        record_rotator_event("rate_limited", account_id)
+                        if account_id:
+                            attempted_accounts.add(account_id)
+                        if not has_yielded_model_data and stream_attempt < MAX_RETRIES - 1:
+                            logger.warning("Anthropic stream 429 限流，改用其他可用账号重试 %d/%d", stream_attempt + 1, MAX_RETRIES)
                             continue
                         raise exc
                     except RequestError as exc:
                         if exc.status == 204 and stream_attempt == 0:
                             logger.warning("Anthropic stream 收到 204，清理 snapshot 缓存后重试一次")
-                            client.clear_snapshot_cache()
+                            stream_client.clear_snapshot_cache()
                             continue
                         raise
                     except AuthError as exc:
-                        if stream_attempt == 0:
-                            logger.warning("Anthropic stream 鉴权异常，清理 snapshot 缓存后重试一次: %s", exc)
-                            client.clear_snapshot_cache()
+                        mark_request_worker_unhealthy(execution.worker_id)
+                        if not has_yielded_model_data and stream_attempt < MAX_RETRIES - 1:
+                            logger.warning("Anthropic stream 工作浏览器鉴权异常，重建后重试 %d/%d: %s", stream_attempt + 1, MAX_RETRIES, exc)
+                            stream_client.clear_snapshot_cache()
                             continue
                         raise
+                    finally:
+                        await lease_context.__aexit__(None, None, None)
 
                 if not saw_tool_use and not text_block_started and thinking_fragments:
                     recovered_calls = _prepare_anthropic_function_calls(
@@ -449,7 +509,8 @@ def _build_anthropic_streaming_response(
                         {"type": "content_block_stop", "index": text_block_index},
                     )
 
-                record_rotator_event("success")
+                execution.succeeded = True
+                record_rotator_event("success", account_id)
                 runtime_state.record(model, "success", final_usage)
                 yield anthropic_sse(
                     "message_delta",
@@ -466,7 +527,7 @@ def _build_anthropic_streaming_response(
             except Exception as exc:
                 logger.error("Anthropic stream error: %s", exc, exc_info=True)
                 if not isinstance(exc, UsageLimitExceeded):
-                    record_rotator_event("error")
+                    record_rotator_event("error", account_id)
                 runtime_state.record(model, "errors")
                 yield anthropic_error_sse(str(exc))
             finally:

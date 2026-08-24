@@ -13,7 +13,11 @@ from .state import runtime_state
 
 
 def _extract_request_token(request: Request) -> str | None:
-    api_key = (request.headers.get("x-api-key") or "").strip()
+    api_key = (
+        request.headers.get("x-api-key")
+        or request.headers.get("x-goog-api-key")
+        or ""
+    ).strip()
     if api_key:
         return api_key
 

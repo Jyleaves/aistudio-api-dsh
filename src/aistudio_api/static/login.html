@@ -5,14 +5,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>登录 - Asteria</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260823-3">
   <style>
     body {
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      background: var(--bg-alt);
+      background:
+        radial-gradient(circle at 50% -10%, rgba(16, 154, 118, 0.12), transparent 34%),
+        var(--bg);
     }
 
     .login-container {
@@ -23,8 +25,9 @@
 
     .login-card {
       background: #fff;
-      border-radius: 16px;
-      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
       padding: 40px 32px;
     }
 
@@ -36,8 +39,8 @@
     .login-logo {
       width: 56px;
       height: 56px;
-      background: var(--green);
-      border-radius: 14px;
+      background: linear-gradient(145deg, #16aa83, #08795d);
+      border-radius: 16px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -45,11 +48,12 @@
       font-weight: 700;
       font-size: 24px;
       margin: 0 auto 16px;
+      box-shadow: 0 8px 20px rgba(16, 154, 118, 0.2);
     }
 
     .login-header h1 {
       font-size: 24px;
-      font-weight: 600;
+      font-weight: 700;
       margin-bottom: 8px;
     }
 
@@ -101,6 +105,7 @@
       cursor: pointer;
       transition: background 0.15s;
       font-family: inherit;
+      box-shadow: 0 6px 14px rgba(16, 154, 118, 0.16);
     }
 
     .login-btn:hover {
@@ -149,9 +154,9 @@
   <div class="login-container">
     <div class="login-card">
       <div class="login-header">
-        <div class="login-logo">AI</div>
-        <h1>AI Studio Proxy</h1>
-        <p>请输入 API Token 登录系统</p>
+        <div class="login-logo">A</div>
+        <h1>Asteria</h1>
+        <p>请输入访问密钥继续</p>
       </div>
 
       <div class="login-error" :class="{show: error}" x-text="error"></div>

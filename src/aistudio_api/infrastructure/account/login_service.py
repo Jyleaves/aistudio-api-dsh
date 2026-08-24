@@ -8,7 +8,7 @@ import re
 import secrets
 import sys
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -33,6 +33,49 @@ from aistudio_api.infrastructure.browser.camoufox_manager import CamoufoxManager
 logger = logging.getLogger("aistudio.login")
 
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+
+
+def _copy_login_profile_to_account(profile_dir: Path | None, account_store: Any, account_id: str | None) -> None:
+    """Preserve the real Chromium session for the newly saved account.
+
+    Google login sessions contain more than exportable cookies. In particular,
+    a fresh persistent context seeded only from storage_state may retain NID
+    while losing the authenticated AI Studio session. Copy after the login
+    context is closed so Chromium's SQLite files are no longer locked.
+    """
+    if not profile_dir or not account_id or not profile_dir.exists():
+        return
+    target = account_store.get_profile_path(account_id)
+    if target is None:
+        return
+    import shutil
+
+    try:
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        if target.exists():
+            # 目录被占用（通常是后台浏览器正持有该账号的 profile）。
+            # 现有 profile 本就属于同一账号，保留它比强行覆盖更安全。
+            logger.warning(
+                "账号 Chromium profile 目录被占用，跳过覆盖: %s", target
+            )
+            return
+        shutil.copytree(profile_dir, target)
+        # Tell account activation this profile was just written by a completed
+        # login. Activation used to treat every existing profile as stale and
+        # delete it, which destroyed the freshly copied session and left the
+        # background browser signed out.
+        try:
+            (target.parent / "profile.fresh").write_text(
+                datetime.now(timezone.utc).isoformat(), encoding="utf-8"
+            )
+        except OSError:
+            pass
+        logger.info("已保存账号 Chromium profile: %s", target)
+    except Exception as exc:
+        # auth.json remains available as a fallback, so profile migration must
+        # not turn an otherwise successful Google login into a failed login.
+        logger.warning("保存账号 Chromium profile 失败，将使用 auth.json: %s", exc)
 
 
 def _normalize_email(value: Any) -> str | None:
@@ -104,9 +147,10 @@ class LoginService:
         self._sessions: dict[str, LoginSession] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._terminal_lock = asyncio.Lock()
-        # The login profile is a single Chromium user-data-dir, so two logins
-        # cannot run at once (Chromium locks the profile directory).
-        self._login_lock = asyncio.Lock()
+        # The primary profile keeps the account chooser history. Concurrent
+        # login windows use isolated temporary profiles because Chromium locks
+        # a persistent user-data-dir while it is running.
+        self._profile_users: dict[str, Path] = {}
 
     def _generate_session_id(self) -> str:
         return f"login_{secrets.token_hex(8)}"
@@ -120,11 +164,16 @@ class LoginService:
         ui_locale: str | None = None,
     ) -> str:
         """启动登录流程，返回 session_id。"""
-        if self._login_lock.locked():
-            raise RuntimeError("已有登录窗口打开，请先完成或关闭当前登录")
         session_id = self._generate_session_id()
         session = LoginSession(session_id=session_id)
         self._sessions[session_id] = session
+        # 每次登录都用独立的全新临时 profile。复用持久 profile 时，Google
+        # 的邮箱输入页一旦检测到既有授权会话就会自动续登跳走（?pli=1），
+        # 用户正在输入新邮箱时会被打断；全新 profile 下 Google 必须等待
+        # 用户完成输入。登录成功后 profile 会复制到账号目录，临时目录
+        # 随即删除（见 _login_worker 的 finally）。
+        profile_dir = Path(settings.login_profile_dir) / "parallel" / session_id
+        self._profile_users[session_id] = profile_dir
         # 启动后台任务
         task = asyncio.create_task(
             self._login_worker(
@@ -142,6 +191,23 @@ class LoginService:
         """获取登录状态。"""
         return self._sessions.get(session_id)
 
+    def has_pending_session(self) -> bool:
+        """是否仍有等待用户完成登录的会话。"""
+        return any(
+            session.status == LoginStatus.PENDING
+            for session in self._sessions.values()
+        )
+
+    async def close(self) -> None:
+        """取消登录任务，让每个 worker 在 finally 中关闭浏览器并释放 profile。"""
+        tasks = [task for task in self._tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._profile_users.clear()
+
     async def clear_login_profile(self) -> None:
         """清除持久化登录档案（Google 账号选择器里记住的账号列表）。
 
@@ -150,13 +216,12 @@ class LoginService:
         """
         import shutil
 
-        if self._login_lock.locked():
+        if self._profile_users:
             raise RuntimeError("登录窗口打开中，请先完成或关闭当前登录")
-        async with self._login_lock:
-            profile_path = Path(settings.login_profile_dir)
-            if profile_path.exists():
-                shutil.rmtree(profile_path, ignore_errors=True)
-                logger.info("已清除登录档案: %s", profile_path)
+        profile_path = Path(settings.login_profile_dir)
+        if profile_path.exists():
+            await asyncio.to_thread(shutil.rmtree, profile_path, True)
+            logger.info("已清除登录档案: %s", profile_path)
 
     def _terminal_available(self) -> bool:
         return sys.stdin.isatty() and sys.stdout.isatty()
@@ -663,16 +728,57 @@ class LoginService:
         return "switch"
 
     def _build_login_url(self, *, ui_locale: str | None = None) -> str:
-        # AddSession keeps Google's account chooser visible even when the login
-        # profile already holds a live session: previously used accounts show up
-        # as a one-click list plus "use another account". ServiceLogin would
-        # silently redirect through the current session instead.
+        # Open Google's account chooser directly. The accountchooser endpoint
+        # requires the same flow context as AI Studio's normal ServiceLogin;
+        # using only `continue` produces Google's 400 page.
+        # 注意不要带 passive 参数：那是 Google 的"被动登录"模式，当浏览器
+        # 已持有对目标站的有效会话时会静默自动续登并跳转——用户正在
+        # "添加其他账号"输入新邮箱时会被这股自动跳转打断。
+        continue_url = "https://aistudio.google.com/app/prompts/new_chat"
         query = {
-            "continue": "https://aistudio.google.com",
+            "continue": continue_url,
+            "followup": continue_url,
+            "flowName": "GlifWebSignIn",
+            "flowEntry": "ServiceLogin",
         }
         if ui_locale:
             query["hl"] = ui_locale
-        return f"https://accounts.google.com/AddSession?{urlencode(query)}"
+        return f"https://accounts.google.com/v3/signin/accountchooser?{urlencode(query)}"
+
+    @staticmethod
+    async def _goto_login_entry(page, url: str) -> bool:
+        """Open Google login without closing a usable redirected form on timeout.
+
+        Google can redirect from ``accountchooser`` to ``identifier`` while the
+        original Playwright navigation keeps waiting for ``DOMContentLoaded``.
+        The form is already interactive in that case, and treating the stale
+        navigation promise as a fatal error closes the window underneath the
+        user. Only recover when the main page is demonstrably a loaded Google
+        Accounts document; every other navigation error still fails normally.
+        """
+        try:
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            return False
+        except Exception:
+            try:
+                host = (urlparse(page.url or "").hostname or "").lower()
+                ready_state = await page.evaluate("() => document.readyState")
+            except Exception:
+                raise
+            if host != "accounts.google.com" or ready_state not in {
+                "interactive",
+                "complete",
+            }:
+                raise
+            logger.warning(
+                "Google 登录入口导航等待超时，但表单已可用，继续等待用户操作: %s",
+                page.url,
+            )
+            return True
 
     async def _terminal_login_loop(
         self,
@@ -840,15 +946,25 @@ class LoginService:
     ) -> None:
         """登录工作协程。"""
         session = self._sessions[session_id]
-        # 登录 profile 是单个 Chromium user-data-dir，同一时间只能有一个登录
-        # 窗口使用它；start_login 已做快速失败，这里兜底串行化。
-        await self._login_lock.acquire()
         manager: CamoufoxManager | None = None
         playwright = None
         browser = None
         context = None
         terminal_task: asyncio.Task | None = None
+        saved_account_id: str | None = None
+        probe_started = time.perf_counter()
+
+        def probe(stage: str, **fields: Any) -> None:
+            details = " ".join(f"{key}={value}" for key, value in fields.items())
+            logger.info(
+                "[probe] login.%s elapsed=%.3fs%s",
+                stage,
+                time.perf_counter() - probe_started,
+                f" {details}" if details else "",
+            )
+
         try:
+            probe("worker_started", headless=headless)
             # 启动浏览器
             if is_camoufox_engine():
                 manager = CamoufoxManager(
@@ -865,19 +981,25 @@ class LoginService:
                 context = await browser.new_context(**build_browser_context_options(headless=headless))
                 backend_desc = describe_browser_backend()
             else:
-                # 首选系统 Chrome/Edge（无需下载 500MB CloakBrowser），
-                # 且使用持久化 profile，Google 会记住账号并显示账号选择列表。
+                # start_login 已为本次会话分配了独立的临时 profile；直接调用
+                # worker 的场景（如测试）在此兜底分配，保持行为一致。
+                profile_dir = self._profile_users.get(session_id)
+                if profile_dir is None:
+                    profile_dir = Path(settings.login_profile_dir) / "parallel" / session_id
+                    self._profile_users[session_id] = profile_dir
                 handle = await async_launch_login_context(
                     headless=headless,
-                    profile_dir=settings.login_profile_dir,
+                    profile_dir=str(profile_dir),
                 )
                 context = handle.context
                 playwright = handle.playwright
                 backend_desc = handle.backend
+            probe("browser_ready", backend=backend_desc)
             logger.info("浏览器后端已准备: %s", backend_desc)
 
             page = context.pages[0] if context.pages else await context.new_page()
             await async_maximize_page_window(page, headless=headless)
+            probe("page_ready", pages=len(context.pages))
 
             # 设置登录完成检测
             login_done = asyncio.Event()
@@ -903,9 +1025,21 @@ class LoginService:
                 if frame is not page.main_frame:
                     return
                 url = frame.url
-                logger.debug("导航到: %s", url)
-                # 检测登录完成：跳转到非登录页面
-                if "accounts.google.com" not in url and "google.com" in url:
+                logger.info("[login-nav] %s", url)
+                # 检测登录完成：只有真正回到 AI Studio（登录 continue 目标）
+                # 才算完成。Google 登录流程中的 www.google.com 等中间跳转
+                # 不能作为完成依据，否则用户还在输入邮箱时窗口就会被带去
+                # 会话验证并用既有账号的会话草草结束登录。
+                try:
+                    host = (urlparse(url).hostname or "").lower()
+                except Exception:
+                    host = ""
+                if host == "aistudio.google.com":
+                    if "pli=1" in (url or ""):
+                        # pli=1 是 Google "复用既有会话自动续登"的标志，用户
+                        # 并没有真正交互。不算登录完成，等用户继续操作。
+                        logger.info("[login-nav] 忽略 Google 自动续登跳转（pli=1）")
+                        return
                     # 尝试提取邮箱
                     try:
                         detected_email = await page.evaluate("""
@@ -948,11 +1082,16 @@ class LoginService:
             # Google keeps background requests open for a long time; waiting for
             # networkidle made the login page look frozen before the user could
             # interact with it. DOMContentLoaded is enough for the form.
-            await page.goto(
+            entry_navigation_recovered = await self._goto_login_entry(
+                page,
                 self._build_login_url(ui_locale=ui_locale),
-                wait_until="domcontentloaded",
             )
             await page.wait_for_timeout(400)
+            probe(
+                "login_page_ready",
+                host=(page.url or "").split("/", 3)[2] if "/" in (page.url or "") else "",
+                recovered=entry_navigation_recovered,
+            )
 
             terminal_task = asyncio.create_task(
                 self._terminal_login_loop(session_id, page, login_done, headless=headless)
@@ -984,9 +1123,27 @@ class LoginService:
             if login_aborted.is_set():
                 return
 
+            probe("user_login_detected", status=session.status.value)
+
+            # A Google account page is not enough evidence that AI Studio can
+            # use the session. Visit the actual target before exporting the
+            # state; this materializes any AI Studio session cookies and
+            # prevents a false "login succeeded" result.
+            logger.info("验证 AI Studio 登录会话...")
+            await page.goto(
+                "https://aistudio.google.com/app/prompts/new_chat",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await page.wait_for_timeout(1200)
+            if "accounts.google.com" in (page.url or ""):
+                raise RuntimeError("Google 登录尚未完成，AI Studio 仍要求重新登录")
+            probe("aistudio_session_verified", host=(page.url or "").split("/", 3)[2] if "/" in (page.url or "") else "")
+
             # 登录完成，保存 storage state
             logger.info("登录完成，保存 cookie")
             storage_state = await context.storage_state()
+            probe("storage_state_saved", cookies=len(storage_state.get("cookies", [])))
 
             # 尝试从 Google 账号页面获取邮箱
             if detected_email is None:
@@ -1011,6 +1168,7 @@ class LoginService:
                         }
                     """)
                     detected_email = _normalize_email(detected_email)
+                    probe("account_page_checked", found_email=bool(detected_email))
                 except Exception as e:
                     logger.warning("从 Google 账号页面获取邮箱失败: %s", e)
                     # 即使导航超时，Google 通常已经填充了部分 DOM；继续从当前页读取。
@@ -1034,8 +1192,8 @@ class LoginService:
                 email=detected_email,
                 storage_state=storage_state,
             )
-
-            session.status = LoginStatus.COMPLETED
+            probe("account_saved", account_id=meta.id)
+            saved_account_id = meta.id
             session.account_id = meta.id
             session.email = detected_email
             logger.info("账号已保存: %s (%s)", meta.id, detected_email)
@@ -1074,6 +1232,19 @@ class LoginService:
                     await manager.stop()
             except Exception:
                 pass
-            self._login_lock.release()
+            probe("cleanup_finished", status=session.status.value)
+            profile_dir = self._profile_users.pop(session_id, None)
+            if saved_account_id and session.status != LoginStatus.FAILED:
+                _copy_login_profile_to_account(profile_dir, account_store, saved_account_id)
+                # Do not expose COMPLETED until the account profile is fully
+                # migrated. The UI immediately activates the new account; if
+                # this flag is set earlier, activation can race the copy and
+                # launch a fresh unauthenticated profile.
+                session.status = LoginStatus.COMPLETED
+                probe("completed", account_id=saved_account_id)
+            if profile_dir is not None and profile_dir.parent.name == "parallel":
+                import shutil
+                shutil.rmtree(profile_dir, ignore_errors=True)
+                logger.info("已清理并发登录 profile: %s", profile_dir)
             # 清理任务引用
             self._tasks.pop(session_id, None)

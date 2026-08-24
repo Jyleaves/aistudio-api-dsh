@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -45,20 +47,46 @@ class AIStudioClient:
         "1024x1536": ["2:3", "1K"],
     }
 
-    def __init__(self, port: int = DEFAULT_BROWSER_PORT):
+    def __init__(
+        self,
+        port: int = DEFAULT_BROWSER_PORT,
+        *,
+        auth_file: str | None = None,
+        profile_dir: str | None = None,
+        snapshot_cache: SnapshotCache | None = None,
+        account_id: str | None = None,
+        browser_identity_key: str | None = None,
+    ):
         self.port = port
+        self._account_id = account_id
+        self._snapshot_cache = snapshot_cache or _snapshot_cache
+        if account_id is not None:
+            self._snapshot_cache.set_namespace(account_id)
         self._captured: Optional[CapturedRequest] = None
-        self._session = BrowserSession(port=port)
-        self._capture_service = RequestCaptureService(self._session, _snapshot_cache)
+        self._session = BrowserSession(
+            port=port,
+            auth_file=auth_file,
+            profile_dir=profile_dir,
+            browser_identity_key=browser_identity_key,
+        )
+        self._capture_service = RequestCaptureService(self._session, self._snapshot_cache)
         self._replay_service = RequestReplayService(session=self._session)
-        
         self._streaming_gateway = StreamingGateway(session=self._session)
 
     async def warmup(self) -> None:
         """预热浏览器后端并加载 AI Studio 页面。"""
         if self._session is not None:
             await self._session.ensure_context()
+            await self._session.ensure_authenticated()
             logger.info("浏览器预热完成")
+
+    async def close(self) -> None:
+        """释放客户端持有的后台浏览器和工作线程。"""
+        session = self._session
+        if session is None:
+            return
+        await session.close()
+        self._session = None
 
     async def switch_auth(self, auth_file: str | None) -> None:
         """切换账号的 auth 文件。"""
@@ -71,7 +99,7 @@ class AIStudioClient:
 
     def clear_snapshot_cache(self) -> None:
         """清除 snapshot 缓存。"""
-        _snapshot_cache.clear()
+        self._snapshot_cache.clear()
 
     def _dump_raw_exchange(
         self,
@@ -80,6 +108,7 @@ class AIStudioClient:
         model: str,
         capture_prompt: str,
         modified_body: str,
+        status_code: int,
         raw_response: str,
     ) -> None:
         if not settings.dump_raw_response:
@@ -88,15 +117,21 @@ class AIStudioClient:
         out_dir = Path(settings.dump_raw_response_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         safe_model = model.replace("/", "_")
-        timestamp = __import__("time").strftime("%Y%m%d_%H%M%S")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        unique_suffix = time.time_ns() % 1_000_000_000
+        safe_account = (self._account_id or "unknown").replace("/", "_")
         payload = {
             "kind": kind,
+            "account_id": self._account_id,
             "model": model,
+            "status_code": status_code,
             "capture_prompt": capture_prompt,
             "modified_body": json.loads(modified_body),
             "raw_response": raw_response,
         }
-        path = out_dir / f"aistudio_{kind}_{safe_model}_{timestamp}.json"
+        path = out_dir / (
+            f"aistudio_{kind}_{safe_model}_{safe_account}_{timestamp}_{unique_suffix:09d}.json"
+        )
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         logger.info("已落盘原始请求/响应: %s", path)
 
@@ -109,18 +144,32 @@ class AIStudioClient:
         force_refresh: bool = False,
     ) -> Optional[CapturedRequest]:
         # 进程启动时已有 active account 的场景也要正确选择 snapshot 命名空间。
-        from aistudio_api.api.state import runtime_state
-        account_service = runtime_state.account_service
-        active_account = account_service.get_active_account() if account_service else None
-        if active_account is not None and hasattr(_snapshot_cache, "set_namespace"):
-            _snapshot_cache.set_namespace(active_account.id)
-        return await self._capture_service.capture(
-            prompt=prompt,
-            model=model,
-            images=images,
-            contents=contents,
-            force_refresh=force_refresh,
-        )
+        if getattr(self, "_account_id", None) is None:
+            from aistudio_api.api.state import runtime_state
+
+            account_service = runtime_state.account_service
+            active_account = account_service.get_active_account() if account_service else None
+            snapshot_cache = getattr(self, "_snapshot_cache", _snapshot_cache)
+            if active_account is not None:
+                snapshot_cache.set_namespace(active_account.id)
+        for attempt in range(2):
+            try:
+                return await self._capture_service.capture(
+                    prompt=prompt,
+                    model=model,
+                    images=images,
+                    contents=contents,
+                    force_refresh=force_refresh or attempt > 0,
+                )
+            except Exception as exc:
+                if attempt != 0 or "Execution context was destroyed" not in str(exc):
+                    raise
+                logger.warning(
+                    "页面仍在导航，等待稳定后重试请求捕获: %s",
+                    exc,
+                )
+                await self._session.ensure_hook_page()
+                await asyncio.sleep(0.5)
 
     async def replay(self, body: str, timeout: int = 120) -> tuple[int, bytes]:
         return await self._replay_service.replay(self._captured, body=body, timeout=timeout)
@@ -273,6 +322,14 @@ class AIStudioClient:
             generation_config_overrides=generation_config_overrides,
             sanitize_plain_text=sanitize_plain_text,
         )
+        try:
+            logger.info(
+                "[probe] request.wire_model requested=%s encoded=%s",
+                model,
+                json.loads(modified_body)[0],
+            )
+        except (json.JSONDecodeError, IndexError, TypeError):
+            logger.warning("[probe] request.wire_model unreadable requested=%s", model)
 
         status, raw = await self._replay_service.replay(captured, body=modified_body)
         raw_text = raw.decode("utf-8", errors="replace")
@@ -281,6 +338,7 @@ class AIStudioClient:
             model=model,
             capture_prompt=capture_prompt,
             modified_body=modified_body,
+            status_code=status,
             raw_response=raw_text,
         )
         if status != 200:
@@ -348,6 +406,7 @@ class AIStudioClient:
             model=model,
             capture_prompt=prompt,
             modified_body=modified_body,
+            status_code=status,
             raw_response=raw_text,
         )
         if status != 200:

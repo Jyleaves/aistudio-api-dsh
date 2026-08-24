@@ -20,6 +20,7 @@ def _use_empty_key_store(monkeypatch, tmp_path):
     from aistudio_api.infrastructure.auth.api_key_store import ApiKeyStore
 
     store = ApiKeyStore(tmp_path / "api_keys.json")
+    monkeypatch.setattr(settings, "api_key_store_path", str(tmp_path / "api_keys.json"))
     # require_api_key 通过 dependencies 模块引用 get_api_key_store，
     # 因此 patch 需要落在 dependencies 的命名空间。
     monkeypatch.setattr(
@@ -60,6 +61,17 @@ def test_x_api_key_is_accepted(monkeypatch, tmp_path):
     client = _build_client()
 
     response = client.get("/protected", headers={"X-API-Key": secret})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_google_api_key_header_is_accepted(monkeypatch, tmp_path):
+    store = _use_empty_key_store(monkeypatch, tmp_path)
+    _, secret = store.create("test")
+    client = _build_client()
+
+    response = client.get("/protected", headers={"X-Goog-Api-Key": secret})
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}

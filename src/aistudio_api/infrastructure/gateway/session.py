@@ -10,6 +10,7 @@ import logging
 import threading
 import time
 import uuid
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
@@ -137,6 +138,27 @@ DIALOG_CLEANUP_JS = """(() => {
 BOTGUARD_BOOTSTRAP_PROMPT = "say '1'"
 TEMPLATE_CAPTURE_PROMPT = "say 't'"
 
+# Google only sets these after a real sign-in. NID/OTZ are handed out to
+# anonymous visitors, so they prove nothing about authentication.
+_GOOGLE_SESSION_COOKIE_NAMES = frozenset({
+    "sid", "hsid", "ssid", "sapisid", "lsid", "sidcc",
+    "__secure-1psid", "__secure-3psid",
+    "__secure-1papisid", "__secure-3papisid",
+    "__secure-1psidcc", "__secure-3psidcc",
+})
+
+
+def _has_google_session_cookies(cookies: list[dict[str, Any]] | None) -> bool:
+    """True when the cookie jar carries an authenticated Google session."""
+    for cookie in cookies or []:
+        name = (cookie.get("name") or "").lower()
+        if name not in _GOOGLE_SESSION_COOKIE_NAMES:
+            continue
+        domain = (cookie.get("domain") or "").lstrip(".").lower()
+        if domain == "google.com" or domain.endswith(".google.com"):
+            return True
+    return False
+
 
 def _clear_worker_event_loop() -> None:
     try:
@@ -146,10 +168,18 @@ def _clear_worker_event_loop() -> None:
 
 
 class BrowserSession:
-    def __init__(self, port: int):
+    def __init__(
+        self,
+        port: int,
+        *,
+        auth_file: str | None = None,
+        profile_dir: str | None = None,
+        browser_identity_key: str | None = None,
+    ):
         self.port = port
-        self._auth_file = settings.auth_file or self._discover_active_auth_file()
-        self._profile_dir = self._derive_profile_dir(self._auth_file)
+        self._auth_file = auth_file or settings.auth_file or self._discover_active_auth_file()
+        self._profile_dir = profile_dir or self._derive_profile_dir(self._auth_file)
+        self._browser_identity_key = browser_identity_key
         self._hook_page = None
         self._ctx = None
         self._browser = None
@@ -164,9 +194,25 @@ class BrowserSession:
             thread_name_prefix="aistudio-browser",
             initializer=_clear_worker_event_loop,
         )
+        self._closed = False
 
     async def ensure_context(self):
-        return await self._run_sync(self._ensure_browser_sync)
+        started = time.perf_counter()
+        try:
+            result = await self._run_sync(self._ensure_browser_sync)
+            log.info("[probe] ensure_context total=%.3fs result=ready", time.perf_counter() - started)
+            return result
+        except Exception as exc:
+            log.info(
+                "[probe] ensure_context total=%.3fs result=error type=%s",
+                time.perf_counter() - started,
+                type(exc).__name__,
+            )
+            raise
+
+    async def ensure_authenticated(self) -> None:
+        """确认当前懒加载的浏览器上下文仍持有真实 Google 会话。"""
+        await self._run_sync(self._verify_authenticated_sync)
 
     async def switch_auth(self, auth_file: str | None) -> None:
         await self._run_sync(self._switch_auth_sync, auth_file)
@@ -175,6 +221,14 @@ class BrowserSession:
         await self._run_sync(self._ensure_hook_page_sync)
         return True
 
+    @staticmethod
+    def _is_aistudio_page_url(url: str | None) -> bool:
+        """Check the actual host, not a continue= query parameter."""
+        try:
+            return (urlparse(url or "").hostname or "").lower() == "aistudio.google.com"
+        except Exception:
+            return False
+
     async def ensure_botguard_service(self):
         await self._run_sync(self._ensure_botguard_service_sync)
         return True
@@ -182,75 +236,6 @@ class BrowserSession:
     async def discover_models(self, force: bool = False) -> list[str]:
         """Discover Gemini model labels exposed by the signed-in AI Studio UI."""
         return await self._run_sync(self._discover_models_sync, force)
-
-    async def import_cookies(self, cookie_string: str, auth_file: str | None = None) -> int:
-        """注入 cookie 字符串到浏览器，访问页面获取完整 cookie，再导出保存。"""
-        def _sync():
-            from aistudio_api.infrastructure.account.cookie_refresher import load_cookies_from_string
-
-            pw_cookies = load_cookies_from_string(cookie_string)
-            target_auth_file = auth_file or self._auth_file
-            original_auth_file = self._auth_file
-            original_profile_dir = self._profile_dir
-            had_live_context = (
-                self._ctx is not None
-                and self._hook_page is not None
-                and not self._hook_page.is_closed()
-            )
-
-            if not target_auth_file:
-                return len(pw_cookies)
-
-            # Seed target auth first so a fresh persistent profile can bootstrap
-            # from the refreshed cookie jar on first launch.
-            self._save_cookies_sync(auth_file=target_auth_file, cookies=pw_cookies)
-
-            switched_target = False
-            target_ctx = self._ctx
-            if (
-                self._ctx is None
-                or not original_auth_file
-                or Path(target_auth_file).resolve() != Path(original_auth_file).resolve()
-            ):
-                self._switch_auth_sync(target_auth_file)
-                switched_target = True
-                target_ctx = self._ensure_browser_sync()
-            elif self._ctx is None:
-                target_ctx = self._ensure_browser_sync()
-
-            if not target_ctx:
-                return len(pw_cookies)
-
-            target_ctx.add_cookies(pw_cookies)
-
-            # 先走 Google 登录页，让浏览器补全 host-only / session cookies
-            try:
-                page = target_ctx.pages[0] if target_ctx.pages else target_ctx.new_page()
-                self._bootstrap_google_session_sync(page)
-            except Exception as e:
-                log.warning("[import_cookies] browser visit failed: %s", e)
-
-            # 从浏览器导出全部 cookies
-            try:
-                browser_cookies = target_ctx.cookies()
-                if browser_cookies:
-                    self._save_cookies_sync(auth_file=target_auth_file, cookies=browser_cookies)
-                    log.info("[import_cookies] exported %d cookies from browser", len(browser_cookies))
-                else:
-                    # fallback: 用 curl_cffi 的结果
-                    self._save_cookies_sync(auth_file=target_auth_file, cookies=pw_cookies)
-                return len(browser_cookies or pw_cookies)
-            finally:
-                if switched_target and original_auth_file:
-                    self._switch_auth_sync(original_auth_file)
-                    self._profile_dir = original_profile_dir
-                    if had_live_context:
-                        try:
-                            self._ensure_browser_sync()
-                        except Exception as restore_exc:
-                            log.warning("[import_cookies] failed to restore original browser context: %s", restore_exc)
-
-        return await self._run_sync(_sync)
 
     async def capture_template(self, model: str) -> dict[str, Any]:
         return await self._run_sync(self._capture_template_sync, model)
@@ -263,8 +248,14 @@ class BrowserSession:
         return await loop.run_in_executor(self._executor, lambda: self._generate_snapshot_sync(contents))
 
     async def close(self) -> None:
-        await self._run_sync(self._close_sync)
-        self._executor.shutdown(wait=True, cancel_futures=False)
+        """关闭浏览器、Playwright driver 和专用工作线程。"""
+        if getattr(self, "_closed", False):
+            return
+        try:
+            await self._run_sync(self._close_sync)
+        finally:
+            self._executor.shutdown(wait=True, cancel_futures=False)
+            self._closed = True
 
     async def release_context(self) -> None:
         """关闭当前浏览器上下文但保留执行器，释放账号 profile 文件锁。
@@ -334,12 +325,13 @@ class BrowserSession:
 
     def _bootstrap_google_session_sync(self, page) -> None:
         """Visit Google surfaces so Chromium can materialize a stable profile."""
-        page.goto(GOOGLE_LOGIN_BOOTSTRAP_URL, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(3000)
+        # The auth cookies have already been imported. Visiting the Google
+        # login shell first adds several seconds and can wait on long-lived
+        # Google background requests; AI Studio itself is the useful check.
         for url in (AI_STUDIO_URL, AI_STUDIO_URL_FALLBACK):
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(1500)
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(500)
                 if "accounts.google.com" not in (page.url or ""):
                     return
             except Exception:
@@ -635,29 +627,61 @@ class BrowserSession:
         log.debug(f"[timing] hooks installed in {_t.time()-_t0:.1f}s")
         return self._ctx
 
+    def _verify_authenticated_sync(self) -> None:
+        page = self._hook_page
+        if page is None or page.is_closed():
+            raise RuntimeError("浏览器页面尚未准备好")
+        current_url = page.url or ""
+        if "accounts.google.com" in current_url or not self._context_has_google_session():
+            raise RuntimeError("当前账号的 Google 会话已失效，请重新登录或激活其他账号")
+
+    def _rotate_google_session_sync(self, page) -> None:
+        """通过 ServiceLogin 被动续登刷新短时会话 token（如 __Secure-1PSIDTS）。
+
+        登录浏览器导出的会话里，短 TTL token 在账号闲置几分钟后过期：长效
+        cookie 仍有效（页面正常加载、判定已登录），但 GenerateContent 会被
+        Google 以 PERMISSION_DENIED 拒绝。访问 ServiceLogin?continue=... 让
+        Google 用长效 cookie 在当前浏览器里重新签发整套会话 token。这是上
+        游项目 bootstrap 流程的一部分，延迟激活的账号必须走这一步。
+        """
+        try:
+            page.goto(GOOGLE_LOGIN_BOOTSTRAP_URL, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(2500)
+            log.info(
+                "[session-rotate] ServiceLogin 续登完成: url_host=%s",
+                (page.url or "").split("/", 3)[2] if "/" in (page.url or "") else "",
+            )
+        except Exception as exc:
+            log.debug("[session-rotate] bootstrap visit failed: %s", exc)
+
     def _ensure_browser_chromium_sync(self, _t0: float):
         """Chromium backend: prefer per-account persistent profile, fallback to auth.json."""
         import time as _t
 
         profile_dir = self._profile_dir
-        should_seed_from_auth = True
+        log.info(
+            "[probe] chromium.init auth_file=%s profile_dir=%s",
+            bool(self._auth_file),
+            bool(profile_dir),
+        )
         if profile_dir:
             profile_path = Path(profile_dir)
-            # If a profile already existed before launch, trust it as the source of
-            # truth and do not re-inject auth.json on failures. Mixing the two was
-            # causing Google to flag the profile's cookie state as inconsistent.
-            should_seed_from_auth = not (profile_path.exists() and any(profile_path.iterdir()))
             profile_path.mkdir(parents=True, exist_ok=True)
             self._ctx = sync_launch_persistent_context(
                 profile_dir,
+                stable_fingerprint_key=(
+                    getattr(self, "_browser_identity_key", None) or profile_dir
+                ),
                 **build_browser_context_options(),
             )
+            log.info("[probe] chromium.launch persistent=%.3fs", _t.time() - _t0)
             self._browser = None
             self._cf = None
             self._playwright = None
         else:
             self._browser, self._cf, self._playwright = sync_launch_browser()
             self._ctx = self._browser.new_context(**build_browser_context_options())
+            log.info("[probe] chromium.launch persistent=false elapsed=%.3fs", _t.time() - _t0)
 
         # 系统 Chrome/Edge 二进制在 CDP 附加时 navigator.webdriver 为 true；
         # 统一注入抹平（CloakBrowser 二进制天然为 false，注入无害）。
@@ -673,45 +697,77 @@ class BrowserSession:
         self._hook_page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
         sync_maximize_page_window(self._hook_page)
 
-        # First, see whether the persistent profile / current context is already alive.
+        # First, see whether the persistent profile / current context is already
+        # authenticated. AI Studio no longer server-redirects signed-out visits,
+        # so a non-login URL alone misreads an empty profile as logged in.
+        # Require real Google session cookies before trusting the profile.
         try:
+            check_started = _t.time()
             self._hook_page.goto("https://aistudio.google.com/", wait_until="domcontentloaded", timeout=15000)
-            if "accounts.google.com" not in (self._hook_page.url or ""):
+            has_session = self._context_has_google_session()
+            log.info(
+                "[probe] chromium.profile_check elapsed=%.3fs url_host=%s session=%s",
+                _t.time() - check_started,
+                (self._hook_page.url or "").split("/", 3)[2] if "/" in (self._hook_page.url or "") else "",
+                has_session,
+            )
+            if "accounts.google.com" not in (self._hook_page.url or "") and has_session:
                 profile_label = "profile" if profile_dir else "auth.json cache"
                 log.info("[chromium-auth] %s hit", profile_label)
+                self._rotate_google_session_sync(self._hook_page)
+                # ServiceLogin normally returns to the generic AI Studio root,
+                # whose remembered/default model can differ from the API's
+                # configured model.  Merely checking the host let a request for
+                # Gemini 3.7 Flash capture a Gemini 3 Flash Preview template and
+                # Google rejected the replay with PERMISSION_DENIED.  Always
+                # enter the explicit default-model URL after session rotation.
                 self._goto_aistudio_sync(self._hook_page)
+                # Persist cookies refreshed by ServiceLogin so additional
+                # isolated request workers inherit the proven live session,
+                # not the older account snapshot they were initially cloned
+                # from.
+                self._save_cookies_sync()
                 self._install_hooks_sync(self._hook_page)
                 log.debug(f"[timing] page loaded (cached) in {_t.time()-_t0:.1f}s")
                 return self._ctx
+            log.info("[chromium-auth] context lacks Google session cookies; trying auth.json")
         except Exception as e:
             log.debug("[chromium-auth] initial profile check failed: %s", e)
 
-        # Only seed a fresh profile from auth.json once. After a profile exists,
-        # auth.json must not be re-injected or it can corrupt the browser state.
-        if should_seed_from_auth and self._auth_file and Path(self._auth_file).exists():
+        # Rebuild the session from auth.json whenever the current context lacks
+        # one (fresh profile, expired profile, or non-persistent context). This
+        # branch is only reached when the live session check above failed, so
+        # injecting auth.json cannot pollute an existing authenticated profile.
+        if self._auth_file and Path(self._auth_file).exists():
             try:
                 data = json.loads(Path(self._auth_file).read_text())
                 cached = data.get("cookies") or []
-                if cached:
+                if _has_google_session_cookies(cached):
                     self._ctx.add_cookies(cached)
-                    self._bootstrap_google_session_sync(self._hook_page)
-                    if "accounts.google.com" not in (self._hook_page.url or ""):
+                    self._rotate_google_session_sync(self._hook_page)
+                    self._goto_aistudio_sync(self._hook_page)
+                    if (
+                        "accounts.google.com" not in (self._hook_page.url or "")
+                        and self._context_has_google_session()
+                    ):
                         log.info("[chromium-auth] auth.json seeded context (%d cookies)", len(cached))
                         self._save_cookies_sync()
-                        self._goto_aistudio_sync(self._hook_page)
+                        log.info("[probe] chromium.auth_seed elapsed=%.3fs", _t.time() - _t0)
                         self._install_hooks_sync(self._hook_page)
                         log.debug(f"[timing] page loaded (cached) in {_t.time()-_t0:.1f}s")
                         return self._ctx
                     log.info("[chromium-auth] auth.json appears expired")
+                else:
+                    log.info("[chromium-auth] auth.json has no session cookies")
             except Exception as e:
                 log.debug("[chromium-auth] auth.json load failed: %s", e)
-        elif profile_dir:
-            log.info("[chromium-auth] existing profile present; skipped auth.json seeding to avoid cookie pollution")
 
         log.debug(f"[timing] browser launched in {_t.time()-_t0:.1f}s")
         self._goto_aistudio_sync(self._hook_page)
+        log.info("[probe] chromium.goto_aistudio elapsed=%.3fs", _t.time() - _t0)
         log.debug(f"[timing] page loaded in {_t.time()-_t0:.1f}s")
         self._install_hooks_sync(self._hook_page)
+        log.info("[probe] chromium.install_hooks elapsed=%.3fs", _t.time() - _t0)
         log.debug(f"[timing] hooks installed in {_t.time()-_t0:.1f}s")
         return self._ctx
 
@@ -727,6 +783,12 @@ class BrowserSession:
         else:
             log.warning(f"No auth_file! self._auth_file={self._auth_file}")
 
+
+    def _context_has_google_session(self) -> bool:
+        try:
+            return _has_google_session_cookies(self._ctx.cookies())
+        except Exception:
+            return False
 
     def _save_cookies_sync(
         self,
@@ -749,12 +811,22 @@ class BrowserSession:
             auth_path = Path(target_auth_file)
             # 读取现有的 origins 数据（如果有）
             origins = []
+            existing_session = False
             if auth_path.exists():
                 try:
                     existing = json.loads(auth_path.read_text())
                     origins = existing.get("origins", [])
+                    existing_session = _has_google_session_cookies(existing.get("cookies") or [])
                 except Exception:
                     pass
+            if existing_session and not _has_google_session_cookies(current_cookies):
+                # 登录流程刚导出的会话不允许被未登录上下文的匿名 cookie
+                # （仅 NID 之类）覆盖，否则一次误判就毁掉账号凭据。
+                log.warning(
+                    "跳过保存：当前上下文无 Google 会话 cookie，保留 %s 中已有会话",
+                    target_auth_file,
+                )
+                return
             auth_path.parent.mkdir(parents=True, exist_ok=True)
             auth_path.write_text(json.dumps({"cookies": current_cookies, "origins": origins}, indent=2))
             log.info(f"Saved {len(current_cookies)} cookies to {target_auth_file}")
@@ -763,7 +835,7 @@ class BrowserSession:
 
     def _ensure_hook_page_sync(self):
         self._ensure_browser_sync()
-        if "aistudio.google.com" not in (self._hook_page.url or ""):
+        if not self._is_aistudio_page_url(self._hook_page.url):
             self._goto_aistudio_sync(self._hook_page)
         self._install_hooks_sync(self._hook_page)
         return self._hook_page
@@ -772,21 +844,26 @@ class BrowserSession:
         import time as _t
         _t0 = _t.time()
         page = self._ensure_hook_page_sync()
-        if page.evaluate("mw:!!window.__bg_service"):
+        if page.evaluate("mw:!!window.__bg_service") and self._bootstrap_template:
             log.debug(f"[timing] botguard cached, took {_t.time()-_t0:.1f}s")
             return page
 
         captured: dict[str, Any] = {}
+        route_pattern = "**/*GenerateContent*"
 
-        def on_request(request):
-            if "GenerateContent" not in request.url or "Count" in request.url or captured:
+        def on_route(route, request):
+            if "GenerateContent" not in request.url or "Count" in request.url:
+                route.continue_()
                 return
             body = request.post_data
-            if not body:
-                return
-            captured["url"] = request.url
-            captured["headers"] = dict(request.headers)
-            captured["body"] = body
+            if body and not captured:
+                captured["url"] = request.url
+                captured["headers"] = dict(request.headers)
+                captured["body"] = body
+            # Capturing a request template must never create a cloud chat or
+            # consume generation quota. The real user request is replayed only
+            # after its content replaces this blocked bootstrap body.
+            route.abort()
 
         page.evaluate(DIALOG_CLEANUP_JS)
         textarea = page.query_selector("textarea")
@@ -800,7 +877,7 @@ class BrowserSession:
                 dbg_url = dbg_title = dbg_body = '<error>'
             raise RuntimeError(f"textarea not found while capturing BotGuardService; url={dbg_url}, title={dbg_title}, body={dbg_body[:200]}")
         original_text = self._read_textarea_value_sync(textarea)
-        page.on("request", on_request)
+        page.route(route_pattern, on_route)
         try:
             textarea.fill(BOTGUARD_BOOTSTRAP_PROMPT)
             page.wait_for_timeout(800)
@@ -808,19 +885,24 @@ class BrowserSession:
             if not self._click_run_button_sync(page):
                 raise RuntimeError("failed to trigger send while capturing BotGuardService")
 
-            for i in range(45):
+            for _ in range(45):
                 page.wait_for_timeout(1000)
-                if page.evaluate("mw:!!window.__bg_service"):
-                    self._wait_until_idle_sync(page)
-                    if captured and self._bootstrap_template is None:
+                botguard_ready = page.evaluate("mw:!!window.__bg_service")
+                if botguard_ready and captured:
+                    if self._bootstrap_template is None:
                         self._bootstrap_template = dict(captured)
                     self._restore_textarea_value_sync(textarea, original_text)
-                    log.debug(f"[timing] botguard captured after {i+1}s, total {_t.time()-_t0:.1f}s")
+                    log.info(
+                        "[probe] botguard.template_ready network=blocked elapsed=%.3fs",
+                        _t.time() - _t0,
+                    )
                     return page
 
-            raise RuntimeError("BotGuardService capture timeout")
+            raise RuntimeError(
+                "BotGuardService 初始化超时：未能在本地截获请求模板"
+            )
         finally:
-            page.remove_listener("request", on_request)
+            page.unroute(route_pattern, on_route)
             self._restore_textarea_value_sync(textarea, original_text)
 
     def _capture_template_sync(self, model: str) -> dict[str, Any]:
@@ -830,76 +912,13 @@ class BrowserSession:
             log.debug(f"[timing] template cached for {model}")
             return self._templates[model]
 
-        page = self._ensure_botguard_service_sync()
+        self._ensure_botguard_service_sync()
         if self._bootstrap_template:
             captured = dict(self._bootstrap_template)
             self._templates[model] = captured
-            log.debug(f"[timing] reused bootstrap template for {model} in {_t.time()-_t0:.1f}s")
+            log.debug(f"[timing] reused blocked bootstrap template for {model} in {_t.time()-_t0:.1f}s")
             return captured
-        log.debug(f"[timing] botguard done in {_t.time()-_t0:.1f}s, starting template capture")
-        captured: dict[str, Any] = {}
-        last_generate_response: dict[str, Any] | None = None
-
-        def on_request(request):
-            if "GenerateContent" not in request.url or "Count" in request.url or captured:
-                return
-            body = request.post_data
-            if not body or len(body) <= 100:
-                return
-            captured["url"] = request.url
-            captured["headers"] = dict(request.headers)
-            captured["body"] = body
-
-        def on_response(response):
-            nonlocal last_generate_response
-            if "GenerateContent" not in response.url or "Count" in response.url:
-                return
-            try:
-                text = response.text()
-            except Exception as exc:
-                text = f"<response.text() failed: {exc}>"
-            last_generate_response = {
-                "status": response.status,
-                "url": response.url,
-                "body": text[:500],
-            }
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-        try:
-            textarea = page.query_selector("textarea")
-            if textarea is None:
-                raise RuntimeError("textarea not found during template capture")
-            original_text = self._read_textarea_value_sync(textarea)
-            textarea.fill(TEMPLATE_CAPTURE_PROMPT)
-            page.wait_for_timeout(500)
-            if not self._click_run_button_sync(page):
-                raise RuntimeError("failed to trigger send during template capture")
-
-            for _ in range(30):
-                page.wait_for_timeout(1000)
-                if captured:
-                    break
-            if not captured:
-                if last_generate_response is not None:
-                    raise RuntimeError(
-                        "template capture failed after request: "
-                        f"status={last_generate_response['status']} "
-                        f"url={last_generate_response['url']} "
-                        f"body={last_generate_response['body']}"
-                    )
-                raise RuntimeError(f"template capture timeout for model={model}")
-
-            self._wait_until_idle_sync(page)
-            self._restore_textarea_value_sync(textarea, original_text)
-            self._templates[model] = captured
-            log.debug(f"[timing] template captured for {model} in {_t.time()-_t0:.1f}s")
-            return captured
-        finally:
-            page.remove_listener("request", on_request)
-            page.remove_listener("response", on_response)
-            if 'textarea' in locals() and textarea is not None and 'original_text' in locals():
-                self._restore_textarea_value_sync(textarea, original_text)
+        raise RuntimeError("request template unavailable after local capture")
 
     def _generate_snapshot_sync(self, contents: list[AistudioContent]) -> str:
         page = self._ensure_botguard_service_sync()
@@ -1167,7 +1186,9 @@ mw:((hash) => {
     def _verify_account_identity_sync(self, page) -> None:
         """校验浏览器实际登录账号与期望账号是否一致，防止 cookies 交叉污染。
 
-        如果不一致，拒绝保存 cookies 并删除 profile 目录。
+        Google/AI Studio 的 SPA 页面经常不会把当前邮箱直接渲染到 HTML。
+        因此“页面中找不到期望邮箱”不能单独作为账号不一致的证据；只有
+        页面明确暴露了另一个邮箱时才拒绝，避免误删刚刚成功登录的 profile。
         """
         auth_file = self._auth_file
         if not auth_file:
@@ -1191,6 +1212,16 @@ mw:((hash) => {
 
         if expected_email in page_html:
             return  # 一致，通过校验
+
+        # AI Studio 已完成登录且页面正常加载，但邮箱可能只存在于内部
+        # 状态或后续异步请求中。此时跳过严格邮箱匹配，避免误判并删除 profile。
+        current_url = page.url or ""
+        if "accounts.google.com" not in current_url:
+            log.info(
+                "[account-guard] 页面未直接暴露账号邮箱，按已登录 AI Studio 上下文继续: expected=%s",
+                expected_email,
+            )
+            return
 
         # 不一致 — 防止污染
         account_id = meta.get("id", "unknown")
@@ -1216,7 +1247,12 @@ mw:((hash) => {
         for url in (AI_STUDIO_URL, AI_STUDIO_URL_FALLBACK):
             try:
                 _t0 = _t.time()
-                page.goto(url, wait_until="networkidle", timeout=30000)
+                log.info("[probe] aistudio.navigate_start url=%s", url)
+                # Google keeps analytics and streaming requests open. Waiting
+                # for networkidle made account activation needlessly take 30s
+                # per attempt; DOMContentLoaded plus the UI readiness loop is
+                # sufficient for hooks and request capture.
+                page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 log.debug(f"[timing] goto {url} took {_t.time()-_t0:.1f}s")
                 # 检查是否被重定向到登录页
                 current_url = page.url or ""
@@ -1225,42 +1261,69 @@ mw:((hash) => {
                         f"Cookie 认证失败，已被重定向到 Google 登录页。"
                         f" (url={current_url})"
                     )
-                # Wait for SPA framework and chat UI to render
-                for _ in range(60):
-                    page.wait_for_timeout(1000)
-                    has_dms = page.evaluate("mw:!!window.default_MakerSuite")
-                    has_textarea = page.query_selector("textarea") is not None
-                    if has_dms and has_textarea:
-                        log.debug(f"[timing] UI ready (dms+textarea) after {_t.time()-_t0:.1f}s")
-                        self._verify_account_identity_sync(page)
-                        self._save_cookies_sync()
-                        return
-                    if has_dms and _ > 20:
-                        page.evaluate(DIALOG_CLEANUP_JS)
-                log.debug(f"[timing] UI partially ready after {_t.time()-_t0:.1f}s (dms={has_dms}, textarea={has_textarea})")
-                self._verify_account_identity_sync(page)
-                self._save_cookies_sync()
+                self._wait_for_aistudio_ui_sync(page, _t0)
+                log.info("[probe] aistudio.navigate_done url=%s elapsed=%.3fs", url, _t.time() - _t0)
                 return
             except Exception as exc:
-                log.debug(f"[timing] goto {url} failed after {_t.time()-_t0:.1f}s: {exc}")
+                log.warning("[probe] aistudio.navigate_failed url=%s elapsed=%.3fs type=%s", url, _t.time() - _t0, type(exc).__name__)
                 last_exc = exc
         if last_exc is not None:
             raise last_exc
 
+    def _wait_for_aistudio_ui_sync(self, page, started: float) -> None:
+        """Wait for the SPA UI after navigation without navigating again."""
+        import time as _t
+
+        has_dms = False
+        has_textarea = False
+        # Keep the original 60-second readiness budget for slow networks, but
+        # poll more frequently during the first 10 seconds. This shortens the
+        # normal path without changing the readiness conditions or timeout.
+        for index in range(90):
+            page.wait_for_timeout(250 if index < 40 else 1000)
+            current_url = page.url or ""
+            if "accounts.google.com" in current_url:
+                raise RuntimeError(
+                    f"Cookie 认证失败，AI Studio 已重定向到 Google 登录页。 (url={current_url})"
+                )
+            has_dms = page.evaluate("mw:!!window.default_MakerSuite")
+            has_textarea = page.query_selector("textarea") is not None
+            if has_dms and has_textarea:
+                log.info("[probe] aistudio.ui_ready elapsed=%.3fs", _t.time() - started)
+                self._verify_account_identity_sync(page)
+                self._save_cookies_sync()
+                return
+            if has_dms and index > 20:
+                page.evaluate(DIALOG_CLEANUP_JS)
+        log.info(
+            "[probe] aistudio.ui_partial elapsed=%.3fs dms=%s textarea=%s",
+            _t.time() - started,
+            has_dms,
+            has_textarea,
+        )
+        self._verify_account_identity_sync(page)
+        self._save_cookies_sync()
+
     def _install_hooks_sync(self, page) -> None:
+        import time as _t
+        started = _t.time()
         result = page.evaluate(INSTALL_HOOKS_JS)
         if result == "already_hooked":
+            log.info("[probe] hooks.done result=already_hooked elapsed=%.3fs", _t.time() - started)
             return
         if isinstance(result, str) and result.startswith("hooked:"):
             self._snap_key = result.split(":", 1)[1]
+            log.info("[probe] hooks.done result=installed elapsed=%.3fs", _t.time() - started)
             return
         for _ in range(3):
             page.wait_for_timeout(2000)
             result = page.evaluate(INSTALL_HOOKS_JS)
             if result == "already_hooked":
+                log.info("[probe] hooks.done result=already_hooked_retry elapsed=%.3fs", _t.time() - started)
                 return
             if isinstance(result, str) and result.startswith("hooked:"):
                 self._snap_key = result.split(":", 1)[1]
+                log.info("[probe] hooks.done result=installed_retry elapsed=%.3fs", _t.time() - started)
                 return
         page_url = page.url if page else "(no page)"
         page_title = ""
@@ -1268,6 +1331,13 @@ mw:((hash) => {
             page_title = page.title()
         except Exception:
             pass
+        log.error(
+            "[probe] hooks.failed elapsed=%.3fs result=%s url=%s title=%r",
+            _t.time() - started,
+            result,
+            page_url,
+            page_title,
+        )
         raise RuntimeError(f"Hook install failed: {result} (url={page_url}, title={page_title!r})")
 
     def _click_run_button_sync(self, page) -> bool:

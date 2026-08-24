@@ -34,6 +34,7 @@ class AccountStats:
     last_used: float = 0.0           # timestamp
     last_rate_limited: float = 0.0   # timestamp
     cooldown_until: float = 0.0      # timestamp, 429 后冷却期
+    consecutive_rate_limits: int = 0
 
     def is_available(self) -> bool:
         """检查账号是否可用（不在冷却期）。"""
@@ -43,12 +44,22 @@ class AccountStats:
         self.requests += 1
         self.success += 1
         self.last_used = time.time()
+        self.consecutive_rate_limits = 0
 
-    def record_rate_limited(self, cooldown_seconds: int = 60) -> None:
+    def record_rate_limited(self, cooldown_seconds: int = 60) -> int:
         self.requests += 1
         self.rate_limited += 1
+        self.consecutive_rate_limits += 1
         self.last_rate_limited = time.time()
-        self.cooldown_until = time.time() + cooldown_seconds
+        # A short burst limit should recover quickly, while a quota-exhausted
+        # account should not be probed every minute. Exponential backoff keeps
+        # both cases self-healing without permanently disabling the account.
+        applied_cooldown = min(
+            cooldown_seconds * (2 ** (self.consecutive_rate_limits - 1)),
+            3600,
+        )
+        self.cooldown_until = time.time() + applied_cooldown
+        return applied_cooldown
 
     def record_error(self) -> None:
         self.requests += 1
@@ -118,6 +129,23 @@ class AccountRotator:
                 "cooldown_remaining": max(0, int(stats.cooldown_until - time.time())),
             }
         return result
+
+    def scheduling_key(self, account_id: str) -> tuple[int, float, float, int]:
+        """Return an adaptive, stable scheduling priority for one account.
+
+        Healthy accounts are preferred over cooling accounts. Among healthy
+        accounts, least-recently-used keeps load balanced without exposing a
+        user-facing mode. If every account is cooling, the account whose
+        cooldown expires first naturally wins.
+        """
+        stats = self._stats.get(account_id, AccountStats(account_id=account_id))
+        cooling = not stats.is_available()
+        return (
+            1 if cooling else 0,
+            stats.cooldown_until if cooling else 0.0,
+            stats.last_used,
+            stats.requests,
+        )
 
     def _get_available_accounts(self) -> list[tuple[AccountMeta, AccountStats]]:
         """获取所有可用的账号（不在冷却期）。"""
@@ -232,8 +260,10 @@ class AccountRotator:
         """记录 429 限流。"""
         if account_id not in self._stats:
             self._stats[account_id] = AccountStats(account_id=account_id)
-        self._stats[account_id].record_rate_limited(self._cooldown_seconds)
-        logger.warning("账号 %s 被限流，冷却 %ds", account_id, self._cooldown_seconds)
+        applied_cooldown = self._stats[account_id].record_rate_limited(
+            self._cooldown_seconds
+        )
+        logger.warning("账号 %s 被限流，冷却 %ds", account_id, applied_cooldown)
 
     def record_error(self, account_id: str) -> None:
         """记录错误。"""

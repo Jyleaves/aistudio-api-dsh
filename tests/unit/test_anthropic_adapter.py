@@ -119,3 +119,24 @@ def test_anthropic_message_response_maps_function_calls_to_tool_use_blocks():
     assert response.content[0].type == "tool_use"
     assert response.content[0].name == "Read"
     assert response.content[0].input == {"file_path": "navigation/a.py"}
+
+
+def test_anthropic_implicit_thinking_uses_minimal_wire_level():
+    req = AnthropicMessageRequest(
+        model="gemini-3.7-flash",
+        messages=[{"role": "user", "content": "hello"}],
+        max_tokens=64,
+    )
+    normalized = normalize_anthropic_request(req)
+    assert normalized["max_tokens"] == 64
+    assert normalized["generation_config_overrides"]["thinking_config"] == [1, None, None, 4]
+
+
+def test_anthropic_explicit_thinking_keeps_high_wire_level():
+    req = AnthropicMessageRequest(
+        model="gemini-3.7-flash",
+        messages=[{"role": "user", "content": "hello"}],
+        thinking={"type": "enabled", "budget_tokens": 1024},
+    )
+    normalized = normalize_anthropic_request(req)
+    assert normalized["generation_config_overrides"]["thinking_config"] == [1, None, None, 3]

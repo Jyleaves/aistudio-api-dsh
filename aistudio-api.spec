@@ -58,7 +58,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='aistudio-api',
+    name='Asteria',
     icon='image/app-icon/icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
@@ -78,5 +78,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='aistudio-api',
+    name='Asteria',
 )

@@ -5,14 +5,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Asteria</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260823-4">
 </head>
 
 <body x-data="app()" x-init="init()" @click="configOpen=false">
   <div class="overlay" :class="{open:sidebarOpen}" @click="sidebarOpen=false"></div>
   <nav class="sidebar" :class="{open:sidebarOpen}">
     <div class="sidebar-header">
-      <div class="logo">AI</div><span>AI Studio Proxy</span>
+      <div class="logo">A</div><span>Asteria</span>
     </div>
     <div class="nav-section">
       <button class="nav-item" :class="{active:view==='accounts'}" @click="go('accounts')">
@@ -33,6 +33,13 @@
           <circle cx="7.5" cy="15.5" r="4.5" />
           <path d="M11 12l9-9 3 3-2 2 1.5 1.5-2 2L19 10l-3 3" />
         </svg> API Key 管理 </button>
+      <button class="nav-item" :class="{active:view==='guide'}" @click="go('guide')">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+          <line x1="8" y1="7" x2="16" y2="7" />
+          <line x1="8" y1="11" x2="15" y2="11" />
+        </svg> 接入指南 </button>
       <button class="nav-item" :class="{active:view==='settings'}" @click="go('settings')">
         <svg viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="3" />
@@ -80,7 +87,7 @@
           </div>
         </template>
         <template x-if="view!=='chat'">
-          <span class="topbar-title" x-text="view==='dashboard'?'控制面板':view==='accounts'?'账号管理':view==='api-keys'?'API Key 管理':view==='settings'?'设置':view==='update'?'更新项目':'Playground'"></span>
+          <span class="topbar-title" x-text="view==='dashboard'?'使用概览':view==='accounts'?'账号管理':view==='api-keys'?'访问密钥':view==='guide'?'接入指南':view==='settings'?'设置':view==='update'?'应用更新':'Playground'"></span>
         </template>
       </div>
       <div class="topbar-right" @click.stop>
@@ -200,7 +207,7 @@
               </div>
             </div>
             <div class="cfg-sep"></div>
-            <div class="cfg-item" style="padding-top:4px">
+            <div class="cfg-item cfg-danger-row">
               <button class="btn btn-danger btn-block" @click="clearCache()">清理本地缓存</button>
             </div>
           </div>
@@ -221,7 +228,7 @@
             <div class="msg-inner">
               <div class="avatar" :class="m.role==='user'?'avatar-user':'avatar-ai'" x-text="m.role==='user'?'U':'AI'">
               </div>
-              <div style="flex:1;min-width:0">
+              <div class="message-content">
                 <template x-if="m.thinking">
                   <div class="think-block" @click="m.showThinking=!m.showThinking">
                     <div class="think-toggle"><span>思考中</span><span class="think-arrow"
@@ -259,7 +266,7 @@
           </template>
           <div id="input-box">
             <input type="file" x-ref="fileInput" @change="handleImageUpload" accept="image/*" multiple
-              style="display:none">
+              class="file-input-hidden">
             <button class="upload-btn" @click="$refs.fileInput.click()" title="上传图片">
               <svg viewBox="0 0 24 24">
                 <path
@@ -283,14 +290,20 @@
     <div class="page-wrap" :class="{active:view==='dashboard'}">
       <div class="scroll-area">
         <div class="page-pad">
+          <div class="page-header">
+            <div class="page-heading">
+              <h1 class="page-title">使用概览</h1>
+              <p class="page-subtitle">查看账号状态与最近的请求情况。</p>
+            </div>
+          </div>
           <div class="stat-grid">
             <div class="stat-card">
-              <div class="slabel">当前激活账号</div>
-              <div class="sval" x-text="activeAccount.email||'暂无'"></div>
+              <div class="slabel">账号数量</div>
+              <div class="sval" x-text="accounts.length"></div>
             </div>
             <div class="stat-card">
-              <div class="slabel">轮询模式</div>
-              <div class="sval" x-text="rotationMode==='round_robin'?'顺序轮询':rotationMode"></div>
+              <div class="slabel">可用账号</div>
+              <div class="sval" x-text="readyAccountCount"></div>
             </div>
             <div class="stat-card">
               <div class="slabel">总请求数</div>
@@ -318,17 +331,17 @@
                 <tbody>
                   <template x-for="(s,n) in stats" :key="n">
                     <tr>
-                      <td style="font-weight:500" x-text="n.replace('models/','')"></td>
+                      <td class="primary-text" x-text="n.replace('models/','')"></td>
                       <td x-text="s.requests||0"></td>
                       <td><span class="badge badge-green" x-text="s.success||0"></span></td>
                       <td><span class="badge" :class="(s.rate_limited||0)>0?'badge-red':'badge-gray'"
                           x-text="s.rate_limited||0"></span></td>
                       <td x-text="s.errors||0"></td>
-                      <td style="font-size:13px;color:var(--muted)" x-text="fmtDate(s.last_used)"></td>
+                      <td class="date-text" x-text="fmtDate(s.last_used)"></td>
                     </tr>
                   </template>
                   <tr x-show="!Object.keys(stats).length">
-                    <td colspan="6" style="text-align:center;color:var(--muted);padding:24px">暂无数据</td>
+                    <td colspan="6" class="empty-state">暂无数据</td>
                   </tr>
                 </tbody>
               </table>
@@ -341,44 +354,22 @@
     <div class="page-wrap" :class="{active:view==='accounts'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div
-            style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px">
-            <h1 style="font-size:24px;font-weight:700">账号管理</h1>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn" @click="cookieModal.open=true">导入 Cookies</button>
-              <button class="btn" @click="clearLoginProfile()">清除登录档案</button>
+          <div class="page-header">
+            <div class="page-heading">
+              <h1 class="page-title">账号管理</h1>
+              <p class="page-subtitle">添加和管理可用账号，新账号会追加到列表末尾。</p>
+            </div>
+            <div class="page-actions">
               <button class="btn btn-primary" :disabled="loginInProgress" @click="addAccount()"
                 x-text="loginInProgress?'登录中...':'+ 登录账号'"></button>
             </div>
           </div>
-          <div class="card" style="margin-bottom:24px">
-            <div class="card-head">轮询设置</div>
-            <div style="padding:20px;display:flex;flex-wrap:wrap;gap:16px;align-items:end">
-              <div>
-                <div style="font-size:13px;color:var(--muted);margin-bottom:4px">模式</div>
-                <div class="cselect" :class="{open:openSelect==='rotMode'}" @click.stop>
-                  <div class="cselect-btn" @click="toggleSelect('rotMode',$event)" tabindex="0" style="min-width:130px">
-                    <span
-                      x-text="rotCfg.mode==='round_robin'?'顺序轮询':rotCfg.mode==='lru'?'最近最少使用 (LRU)':rotCfg.mode==='least_rl'?'最小频率限制':'未知'"></span><span
-                      class="arrow"></span></div>
-                  <div class="cselect-menu"><template x-for="v in ['round_robin','lru','least_rl']">
-                      <div class="cselect-opt" :class="{active:rotCfg.mode===v}" @click="rotCfg.mode=v;openSelect=null"
-                        x-text="v==='round_robin'?'顺序轮询':v==='lru'?'最近最少使用 (LRU)':v==='least_rl'?'最小频率限制':v"></div>
-                    </template></div>
-                </div>
-              </div>
-              <div>
-                <div style="font-size:13px;color:var(--muted);margin-bottom:4px">冷却时间 (秒)</div><input type="number"
-                  x-model.number="rotCfg.cooldown"
-                  style="width:80px;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:14px"
-                  min="0">
-              </div>
-              <button class="btn" @click="saveRotation()">保存设置</button>
-              <button class="btn" @click="forceNext()">强制切换</button>
-            </div>
+          <div x-show="!appReady || hasAccountPreparations || hasInitializingAccounts" class="status-banner">
+            <span class="status-spinner" aria-hidden="true"></span>
+            <span x-text="hasAccountPreparations||hasInitializingAccounts?'正在后台初始化账号，已就绪账号可立即使用':appReadyMessage"></span>
           </div>
           <div class="card">
-            <div class="card-head"><span>账号池</span><span style="font-size:13px;color:var(--muted)"
+            <div class="card-head"><span>账号列表</span><span class="card-meta"
                 x-text="accountRows.length+' 个账号'"></span></div>
             <div class="table-wrap">
               <table>
@@ -396,23 +387,28 @@
                   <template x-for="a in accountRows" :key="a.id">
                     <tr>
                       <td>
-                        <div style="font-weight:500" x-text="a.email||a.name||a.id"></div>
-                        <div style="font-size:12px;color:var(--muted);font-family:monospace" x-text="a.id"></div>
+                        <div class="primary-text" x-text="a.email||a.name||a.id"></div>
+                        <div class="secondary-text mono" x-text="a.id"></div>
                       </td>
                       <td x-text="a.requests||0"></td>
                       <td><span class="badge badge-green" x-text="a.success||0"></span></td>
                       <td><span class="badge" :class="(a.rate_limited||0)>0?'badge-red':'badge-gray'"
                           x-text="a.rate_limited||0"></span></td>
-                      <td><span class="badge badge-green" x-show="a.id===activeId">激活</span><span
-                          class="badge badge-gray" x-show="a.id!==activeId">待命</span></td>
-                      <td><button class="btn btn-sm" x-show="a.id!==activeId"
-                          @click="activateAccount(a.id)">手动激活</button>
+                      <td><span class="badge badge-amber" x-show="a.availability==='initializing'">初始化中</span><span
+                          class="badge badge-green" x-show="a.availability==='available'">可用</span><span
+                          class="badge badge-red" x-show="a.availability==='failed'">异常</span></td>
+                      <td><div class="action-cell"><button class="btn btn-sm" x-show="a.availability==='failed'"
+                          :disabled="accountPreparations[a.id]"
+                          @click="prepareAccount(a.id)" x-text="accountPreparations[a.id]?'重试中...':'重试初始化'"></button>
                         <button class="btn btn-sm" @click="openAccountEdit(a)">编辑</button>
-                        <button class="btn btn-sm" style="color:#e5484d" @click="logoutAccount(a)">退出登录</button></td>
+                        <button class="btn btn-sm btn-logout" @click="logoutAccount(a)">
+                          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H6.5A1.5 1.5 0 0 0 5 6.5v11A1.5 1.5 0 0 0 6.5 19H10"/><path d="M13 8l4 4-4 4M17 12H9"/></svg>
+                          <span>退出登录</span>
+                        </button></div></td>
                     </tr>
                   </template>
                   <tr x-show="!accountRows.length">
-                    <td colspan="6" style="text-align:center;color:var(--muted);padding:24px">暂无账号</td>
+                    <td colspan="6" class="empty-state">还没有账号，点击右上角“登录账号”开始添加。</td>
                   </tr>
                 </tbody>
               </table>
@@ -425,14 +421,17 @@
     <div class="page-wrap" :class="{active:view==='api-keys'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px">
-            <h1 style="font-size:24px;font-weight:700">API Key 管理</h1>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div class="page-header">
+            <div class="page-heading">
+              <h1 class="page-title">访问密钥</h1>
+              <p class="page-subtitle">为需要连接 Asteria 的客户端创建独立密钥。</p>
+            </div>
+            <div class="page-actions">
               <button class="btn btn-primary" @click="createApiKey()">新建 Key</button>
             </div>
           </div>
           <div class="card">
-            <div class="card-head"><span>访问密钥</span><span style="font-size:13px;color:var(--muted)">只显示脱敏值，明文仅在创建时显示一次</span></div>
+            <div class="card-head"><span>密钥列表</span><span class="card-meta">明文仅在创建时显示一次</span></div>
             <div class="table-wrap">
               <table>
                 <thead><tr><th>名称</th><th>Key 前缀</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
@@ -440,13 +439,13 @@
                   <template x-for="k in apiKeys" :key="k.id">
                     <tr>
                       <td x-text="k.name"></td>
-                      <td style="font-family:monospace" x-text="k.prefix+'...'" ></td>
+                      <td class="mono" x-text="k.prefix+'...'" ></td>
                       <td x-text="fmtDate(k.created_at)"></td>
                       <td><span class="badge badge-green">有效</span></td>
                       <td><button class="btn btn-sm btn-danger" @click="revokeApiKey(k.id)">删除</button></td>
                     </tr>
                   </template>
-                  <tr x-show="!apiKeys.length"><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">暂无 API Key</td></tr>
+                  <tr x-show="!apiKeys.length"><td colspan="5" class="empty-state">还没有访问密钥。</td></tr>
                 </tbody>
               </table>
             </div>
@@ -454,63 +453,119 @@
         </div>
       </div>
     </div>
+    <!-- Client integration guide -->
+    <div class="page-wrap" :class="{active:view==='guide'}">
+      <div class="scroll-area">
+        <div class="page-pad guide-page">
+          <div class="page-header">
+            <div class="page-heading">
+              <h1 class="page-title">接入指南</h1>
+              <p class="page-subtitle">先登录至少一个账号并创建 API Key，再按客户端支持的协议填写。</p>
+            </div>
+            <button class="btn" @click="go('api-keys')">管理 API Key</button>
+          </div>
+
+          <div class="guide-steps">
+            <div class="guide-step"><span>1</span><div><strong>添加账号</strong><small>登录后会自动加入可用账号池</small></div></div>
+            <div class="guide-step"><span>2</span><div><strong>创建密钥</strong><small>密钥明文仅显示一次</small></div></div>
+            <div class="guide-step"><span>3</span><div><strong>配置客户端</strong><small>选择下方对应协议</small></div></div>
+          </div>
+
+          <div class="protocol-tabs" role="tablist" aria-label="API 协议">
+            <button :class="{active:guideProtocol==='openai'}" @click="guideProtocol='openai'">OpenAI</button>
+            <button :class="{active:guideProtocol==='gemini'}" @click="guideProtocol='gemini'">Gemini</button>
+            <button :class="{active:guideProtocol==='anthropic'}" @click="guideProtocol='anthropic'">Anthropic</button>
+          </div>
+
+          <div class="card guide-card" x-show="guideProtocol==='openai'">
+            <div class="card-head"><span>OpenAI 兼容协议</span><span class="badge badge-green">推荐</span></div>
+            <div class="guide-fields">
+              <div class="guide-field"><span>Base URL</span><code x-text="serviceOrigin + '/v1'"></code><button @click="copyText(serviceOrigin + '/v1')">复制</button></div>
+              <div class="guide-field"><span>API Key</span><code>在“API Key 管理”中创建的密钥</code></div>
+              <div class="guide-field"><span>模型</span><code>gemini-3.7-flash</code><button @click="copyText('gemini-3.7-flash')">复制</button></div>
+              <div class="guide-field"><span>认证方式</span><code>Authorization: Bearer &lt;API_KEY&gt;</code></div>
+            </div>
+            <p class="guide-note">适用于 dsh、OpenAI SDK 及大多数支持自定义 OpenAI 地址的客户端。</p>
+          </div>
+
+          <div class="card guide-card" x-show="guideProtocol==='gemini'" x-cloak>
+            <div class="card-head">Gemini 原生协议</div>
+            <div class="guide-fields">
+              <div class="guide-field"><span>Base URL</span><code x-text="serviceOrigin"></code><button @click="copyText(serviceOrigin)">复制</button></div>
+              <div class="guide-field"><span>接口路径</span><code>/v1beta/models/gemini-3.7-flash:generateContent</code></div>
+              <div class="guide-field"><span>模型</span><code>gemini-3.7-flash</code><button @click="copyText('gemini-3.7-flash')">复制</button></div>
+              <div class="guide-field"><span>认证方式</span><code>x-goog-api-key: &lt;API_KEY&gt;</code></div>
+            </div>
+            <p class="guide-note">适用于 Google Gen AI SDK 或支持自定义 Gemini Base URL 的客户端。</p>
+          </div>
+
+          <div class="card guide-card" x-show="guideProtocol==='anthropic'" x-cloak>
+            <div class="card-head">Anthropic 兼容协议</div>
+            <div class="guide-fields">
+              <div class="guide-field"><span>Base URL</span><code x-text="serviceOrigin"></code><button @click="copyText(serviceOrigin)">复制</button></div>
+              <div class="guide-field"><span>接口路径</span><code>/v1/messages</code></div>
+              <div class="guide-field"><span>模型</span><code>gemini-3.7-flash</code><button @click="copyText('gemini-3.7-flash')">复制</button></div>
+              <div class="guide-field"><span>认证方式</span><code>x-api-key: &lt;API_KEY&gt;</code></div>
+            </div>
+            <p class="guide-note">适用于 Anthropic SDK 及支持自定义 Anthropic 地址的客户端。</p>
+          </div>
+
+          <div class="guide-tip"><strong>连接不上？</strong><span>确认 Asteria 正在运行、账号状态可用，地址与 API Key 没有多余空格。外部设备访问时还需放行端口并做好网络访问控制。</span></div>
+        </div>
+      </div>
+    </div>
     <!-- Runtime settings -->
     <div class="page-wrap" :class="{active:view==='settings'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px">
-            <div><h1 style="font-size:24px;font-weight:700">设置</h1><div style="color:var(--muted);font-size:13px;margin-top:6px">配置会保存到项目 .env；浏览器和端口相关设置通常需要重启反代。</div></div>
+          <div class="page-header">
+            <div class="page-heading">
+              <h1 class="page-title">设置</h1>
+              <p class="page-subtitle">更改会保存在本机；标注的项目将在重启 Asteria 后生效。</p>
+            </div>
             <button class="btn btn-primary" @click="saveSettings()" :disabled="settingsSaving" x-text="settingsSaving?'保存中...':'保存设置'"></button>
           </div>
-          <div class="card" style="margin-bottom:16px">
-            <div class="card-head">浏览器与网络</div>
-            <div style="padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
-              <div class="modal-field"><label>反代端口（重启生效）</label><input class="modal-input" type="number" min="1" x-model.number="settings.port"></div>
-              <div class="modal-field"><label>浏览器后端</label><select class="modal-input" x-model="settings.browser_engine"><option value="chromium">自动发现（CloakBrowser/Chrome/Edge）</option><option value="cloakbrowser">CloakBrowser（自动下载）</option><option value="camoufox">Camoufox</option></select></div>
-              <div class="modal-field"><label>浏览器调试端口</label><input class="modal-input" type="number" min="1" x-model.number="settings.browser_port"></div>
-              <div class="modal-field"><label>浏览器 Channel</label><input class="modal-input" x-model="settings.browser_channel" placeholder="例如 msedge，可留空"></div>
-              <div class="modal-field"><label>登录浏览器</label><select class="modal-input" x-model="settings.login_browser"><option value="auto">系统 Chrome/Edge（自动回退）</option><option value="system">仅系统 Chrome/Edge</option><option value="cloakbrowser">CloakBrowser</option></select></div>
-              <div class="modal-field"><label>登录浏览器 Channel</label><input class="modal-input" x-model="settings.login_browser_channel" placeholder="chrome 或 msedge，留空自动检测"></div>
-              <div class="modal-field" style="grid-column:1/-1"><label>浏览器可执行文件</label><input class="modal-input" x-model="settings.browser_executable_path" placeholder="留空使用后端默认值"></div>
-              <div class="modal-field" style="grid-column:1/-1"><label>代理地址</label><input class="modal-input" x-model="settings.proxy_url" placeholder="例如 http://127.0.0.1:7890"></div>
-              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" x-model="settings.browser_headless"> 请求浏览器无头模式</label>
-              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" x-model="settings.browser_chromium_sandbox"> Chromium 沙箱</label>
-              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" x-model="settings.local_ui_auto_login"> 本机管理页自动登录</label>
-            </div>
-          </div>
-          <div class="card" style="margin-bottom:16px">
-            <div class="card-head">账号轮询与并发</div>
-            <div style="padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px">
-              <div class="modal-field"><label>轮询模式</label><select class="modal-input" x-model="settings.account_rotation_mode"><option value="round_robin">round_robin</option><option value="lru">lru</option><option value="least_rl">least_rl</option></select></div>
-              <div class="modal-field"><label>冷却秒数</label><input class="modal-input" type="number" min="1" x-model.number="settings.account_cooldown_seconds"></div>
-              <div class="modal-field"><label>最大重试次数</label><input class="modal-input" type="number" min="1" x-model.number="settings.account_max_retries"></div>
-              <div class="modal-field"><label>最大并发数</label><input class="modal-input" type="number" min="1" x-model.number="settings.max_concurrency"></div>
-            </div>
-          </div>
-          <div class="card" style="margin-bottom:16px">
-            <div class="card-head">超时、缓存与模型默认值</div>
-            <div style="padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px">
-              <div class="modal-field"><label>Replay 超时（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.timeout_replay"></div>
-              <div class="modal-field"><label>流式超时（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.timeout_stream"></div>
-              <div class="modal-field"><label>抓取超时（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.timeout_capture"></div>
-              <div class="modal-field"><label>缓存 TTL（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.snapshot_cache_ttl"></div>
-              <div class="modal-field"><label>缓存最大条目</label><input class="modal-input" type="number" min="1" x-model.number="settings.snapshot_cache_max"></div>
-              <div class="modal-field"><label>默认文本模型</label><input class="modal-input" x-model="settings.default_text_model"></div>
-              <div class="modal-field"><label>默认图片模型</label><input class="modal-input" x-model="settings.default_image_model"></div>
-              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" x-model="settings.dump_raw_response"> 保存原始响应调试文件</label>
-              <div class="modal-field"><label>原始响应目录</label><input class="modal-input" x-model="settings.dump_raw_response_dir"></div>
+          <div class="card">
+            <div class="card-head">连接与使用</div>
+            <div class="settings-grid">
+              <div class="modal-field"><label>服务端口（重启生效）</label><input class="modal-input" type="number" min="1" x-model.number="settings.port"></div>
+              <div class="modal-field"><label>登录窗口</label><select class="modal-input" x-model="settings.login_browser"><option value="chromium">内置窗口（推荐）</option><option value="system">系统浏览器</option><option value="cloakbrowser">兼容模式</option></select></div>
+              <div class="modal-field field-wide"><label>网络代理</label><input class="modal-input" x-model="settings.proxy_url" placeholder="不需要代理时留空"></div>
+              <label class="check-row"><input type="checkbox" x-model="settings.local_ui_auto_login"><span>在本机自动进入管理界面</span></label>
             </div>
           </div>
           <div class="card">
-            <div class="card-head">运行目录与高级路径</div>
-            <div style="padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
-              <div class="modal-field"><label>账号目录</label><input class="modal-input" x-model="settings.accounts_dir"></div>
-              <div class="modal-field"><label>临时文件目录</label><input class="modal-input" x-model="settings.tmp_dir"></div>
-              <div class="modal-field"><label>浏览器 Python</label><input class="modal-input" x-model="settings.browser_python" placeholder="留空使用当前虚拟环境"></div>
-              <div class="modal-field"><label>认证文件</label><input class="modal-input" x-model="settings.auth_file" placeholder="留空自动发现"></div>
-              <div class="modal-field"><label>API Key 存储文件</label><input class="modal-input" x-model="settings.api_key_store_path"></div>
+            <div class="card-head">请求与默认模型</div>
+            <div class="settings-grid">
+              <div class="modal-field"><label>普通请求超时（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.timeout_replay"></div>
+              <div class="modal-field"><label>流式请求超时（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.timeout_stream"></div>
+              <div class="modal-field"><label>准备请求超时（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.timeout_capture"></div>
+              <div class="modal-field"><label>默认文本模型</label><input class="modal-input" x-model="settings.default_text_model"></div>
+              <div class="modal-field"><label>默认图片模型</label><input class="modal-input" x-model="settings.default_image_model"></div>
             </div>
           </div>
+          <details class="advanced-panel">
+            <summary>高级设置</summary>
+            <div class="settings-grid">
+              <div class="settings-note">这些设置用于兼容性诊断。通常保持默认即可。</div>
+              <div class="modal-field"><label>后台运行模式</label><select class="modal-input" x-model="settings.browser_engine"><option value="chromium">自动（推荐）</option><option value="cloakbrowser">兼容模式</option><option value="camoufox">备用兼容模式</option></select></div>
+              <div class="modal-field"><label>后台端口</label><input class="modal-input" type="number" min="1" x-model.number="settings.browser_port"></div>
+              <div class="modal-field"><label>后台通道</label><input class="modal-input" x-model="settings.browser_channel" placeholder="留空自动选择"></div>
+              <div class="modal-field"><label>登录窗口通道</label><input class="modal-input" x-model="settings.login_browser_channel" placeholder="留空自动选择"></div>
+              <div class="modal-field field-wide"><label>后台程序路径</label><input class="modal-input" x-model="settings.browser_executable_path" placeholder="留空使用内置程序"></div>
+              <label class="check-row"><input type="checkbox" x-model="settings.browser_headless"><span>在后台隐藏运行窗口</span></label>
+              <label class="check-row"><input type="checkbox" x-model="settings.browser_chromium_sandbox"><span>启用浏览器安全沙箱</span></label>
+              <div class="modal-field"><label>缓存有效时间（秒）</label><input class="modal-input" type="number" min="1" x-model.number="settings.snapshot_cache_ttl"></div>
+              <div class="modal-field"><label>缓存最大条目</label><input class="modal-input" type="number" min="1" x-model.number="settings.snapshot_cache_max"></div>
+              <label class="check-row"><input type="checkbox" x-model="settings.dump_raw_response"><span>保存诊断数据</span></label>
+              <div class="modal-field"><label>诊断数据目录</label><input class="modal-input" x-model="settings.dump_raw_response_dir"></div>
+              <div class="modal-field"><label>账号目录</label><input class="modal-input" x-model="settings.accounts_dir"></div>
+              <div class="modal-field"><label>临时文件目录</label><input class="modal-input" x-model="settings.tmp_dir"></div>
+              <div class="modal-field"><label>运行环境路径</label><input class="modal-input" x-model="settings.browser_python" placeholder="留空使用默认值"></div>
+              <div class="modal-field"><label>认证文件</label><input class="modal-input" x-model="settings.auth_file" placeholder="留空自动发现"></div>
+              <div class="modal-field"><label>访问密钥存储文件</label><input class="modal-input" x-model="settings.api_key_store_path"></div>
+            </div>
+          </details>
         </div>
       </div>
     </div>
@@ -518,9 +573,12 @@
     <div class="page-wrap" :class="{active:view==='update'}">
       <div class="scroll-area">
         <div class="page-pad">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px">
-            <h1 style="font-size:24px;font-weight:700">更新项目</h1>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div class="page-header">
+            <div class="page-heading">
+              <h1 class="page-title">应用更新</h1>
+              <p class="page-subtitle">检查并安装 Asteria 的最新版本。</p>
+            </div>
+            <div class="page-actions">
               <button class="btn" @click="checkUpdate()" :disabled="updateInfo.checking"
                 x-text="updateInfo.checking?'检查中...':'检查更新'"></button>
               <button class="btn btn-primary" @click="startUpdate()" :disabled="updateInfo.updating||updateInfo.dirty"
@@ -529,12 +587,13 @@
           </div>
           <div class="card">
             <div class="card-head">更新状态</div>
-            <div style="padding:20px;color:var(--muted);font-size:14px">
-              <template x-if="!updateInfo.checked"><span>点击“检查更新”查看 GitHub 仓库是否有新版本。</span></template>
+            <div class="update-content">
+              <template x-if="!updateInfo.checked"><span>点击“检查更新”查看 Asteria 是否有新版本。</span></template>
               <template x-if="updateInfo.checked && updateInfo.error"><span x-text="updateInfo.error"></span></template>
-              <template x-if="updateInfo.checked && !updateInfo.error && updateInfo.dirty"><span>检测到未提交修改。为避免覆盖本地代码，暂时不能一键更新。</span></template>
-              <template x-if="updateInfo.checked && !updateInfo.error && !updateInfo.dirty && !updateInfo.available"><span>当前已经是最新版本。</span></template>
-              <template x-if="updateInfo.checked && !updateInfo.error && !updateInfo.dirty && updateInfo.available"><span>发现新版本，可点击“立即更新”。反代会自动停止、更新依赖并重启。</span></template>
+              <template x-if="updateInfo.checked && !updateInfo.error && !updateInfo.available"><span>当前已经是最新版本。</span></template>
+              <template x-if="updateInfo.checked && !updateInfo.error && updateInfo.available"><span>发现新版本 <b x-text="updateInfo.latest"></b>。更新包不包含浏览器，不会影响账号和设置。</span></template>
+              <template x-if="updateInfo.status === 'downloading'"><div class="update-progress">下载进度：<b x-text="updateInfo.progress + '%'">0%</b><div class="progress-track"><div class="progress-fill" :style="`width:${updateInfo.progress}%`"></div></div></div></template>
+              <template x-if="updateInfo.status === 'ready'"><div class="update-progress success-text">更新已准备好，可以开始安装。</div></template>
             </div>
           </div>
         </div>
@@ -544,10 +603,10 @@
   <!-- API Key reveal modal -->
   <div class="modal-overlay" x-show="apiKeyCreate.open" x-cloak @click.self="apiKeyCreate.open=false" x-transition.opacity>
     <div class="modal" x-show="apiKeyCreate.open" x-transition>
-      <div class="modal-head"><span>新建 API Key</span><button class="modal-close" @click="apiKeyCreate.open=false">&times;</button></div>
+      <div class="modal-head"><span>新建 API Key</span><button class="modal-close" @click="apiKeyCreate.open=false" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
       <div class="modal-body">
-        <div style="color:var(--muted);font-size:14px">请输入便于识别的名称。创建后 Key 明文只显示一次。</div>
-        <div class="modal-field"><label>Key 名称</label><input class="modal-input" x-model="apiKeyCreate.name" placeholder="例如：dsh" @keydown.enter="submitApiKeyCreate()"></div>
+        <div class="muted">输入一个便于识别的名称。创建后密钥明文只显示一次。</div>
+        <div class="modal-field"><label>Key 名称</label><input class="modal-input" x-model="apiKeyCreate.name" placeholder="例如：我的客户端" @keydown.enter="submitApiKeyCreate()"></div>
       </div>
       <div class="modal-foot">
         <button class="btn" @click="apiKeyCreate.open=false">取消</button>
@@ -557,9 +616,9 @@
   </div>
   <div class="modal-overlay" x-show="apiKeyReveal.open" x-cloak @click.self="apiKeyReveal.open=false" x-transition.opacity>
     <div class="modal" x-show="apiKeyReveal.open" x-transition>
-      <div class="modal-head"><span>请立即保存 API Key</span><button class="modal-close" @click="apiKeyReveal.open=false">&times;</button></div>
+      <div class="modal-head"><span>请立即保存 API Key</span><button class="modal-close" @click="apiKeyReveal.open=false" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
       <div class="modal-body">
-        <div style="color:var(--muted);font-size:14px">该 Key 的明文只会显示这一次，关闭后无法从面板恢复。</div>
+        <div class="muted">该 Key 的明文只会显示这一次，关闭后无法从面板恢复。</div>
         <div class="modal-field"><label x-text="apiKeyReveal.name"></label><input class="modal-input" readonly x-model="apiKeyReveal.key" @click="$event.target.select()"></div>
       </div>
       <div class="modal-foot"><button class="btn btn-primary" @click="navigator.clipboard?.writeText(apiKeyReveal.key);showToast('已复制');apiKeyReveal.open=false">复制并关闭</button></div>
@@ -571,7 +630,7 @@
     <div class="modal" x-show="accountEdit.open" x-transition>
       <div class="modal-head">
         <span>编辑账号信息</span>
-        <button class="modal-close" @click="accountEdit.open=false">&times;</button>
+        <button class="modal-close" @click="accountEdit.open=false" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="modal-body">
         <div class="modal-field">
@@ -588,49 +647,48 @@
       </div>
     </div>
   </div>
-  <!-- Cookie Import Modal -->
-  <div class="modal-overlay" x-show="cookieModal.open" x-cloak @click.self="cookieModal.open=false"
-    x-transition.opacity>
-    <div class="modal" x-show="cookieModal.open" x-transition>
+  <!-- Confirm Modal -->
+  <div class="modal-overlay" x-show="confirmDialog.open" x-cloak @click.self="resolveConfirm(false)"
+    x-transition.opacity @keydown.escape.window="confirmDialog.open && resolveConfirm(false)">
+    <div class="modal confirm-modal" :class="{'confirm-danger': confirmDialog.danger}" x-show="confirmDialog.open" x-transition>
       <div class="modal-head">
-        <span>导入 Cookies</span>
-        <button class="modal-close" @click="cookieModal.open=false">&times;</button>
+        <div class="confirm-title-wrap">
+          <div class="confirm-icon" x-show="confirmDialog.danger" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v5M12 17h.01"/></svg>
+          </div>
+          <span x-text="confirmDialog.title"></span>
+        </div>
+        <button class="modal-close" @click="resolveConfirm(false)" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="modal-body">
-        <div class="modal-field">
-          <label>Cookie 字符串 <span style="color:var(--muted);font-weight:400">(每行一个或用分号分隔)</span></label>
-          <textarea class="modal-textarea" x-model="cookieModal.cookies"
-            placeholder="SID=xxx; SSID=xxx; HSID=xxx; ...&#10;或每行一个：&#10;SID=xxx&#10;SSID=xxx&#10;HSID=xxx"
-            rows="8"></textarea>
+        <div class="confirm-account" x-show="confirmDialog.target">
+          <div class="confirm-avatar" x-text="(confirmDialog.target || '?').charAt(0).toUpperCase()"></div>
+          <div class="confirm-account-text">
+            <span class="confirm-account-label" x-text="confirmDialog.targetLabel"></span>
+            <strong x-text="confirmDialog.target"></strong>
+          </div>
         </div>
-        <div style="display:flex;gap:12px">
-          <div class="modal-field" style="flex:1">
-            <label>账号名称 <span style="color:var(--muted);font-weight:400">(可选)</span></label>
-            <input class="modal-input" x-model="cookieModal.name" placeholder="My Account">
-          </div>
-          <div class="modal-field" style="flex:1">
-            <label>邮箱 <span style="color:var(--muted);font-weight:400">(可选)</span></label>
-            <input class="modal-input" x-model="cookieModal.email" placeholder="user@gmail.com">
-          </div>
+        <div class="confirm-message" x-text="confirmDialog.message"></div>
+        <div class="confirm-hint" x-show="confirmDialog.hint">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <span x-text="confirmDialog.hint"></span>
         </div>
       </div>
       <div class="modal-foot">
-        <button class="btn" @click="cookieModal.open=false">取消</button>
-        <button class="btn btn-primary" :disabled="cookieModal.importing" @click="importCookies()">
-          <span x-show="!cookieModal.importing">导入</span>
-          <span x-show="cookieModal.importing">导入中...</span>
-        </button>
+        <button class="btn" @click="resolveConfirm(false)">取消</button>
+        <button :class="confirmDialog.danger ? 'btn btn-danger-solid confirm-action' : 'btn btn-primary confirm-action'" x-text="confirmDialog.confirmText"
+          @click="resolveConfirm(true)"></button>
       </div>
     </div>
   </div>
-  <div class="toast" :class="{show:toast.show}" x-text="toast.msg"></div>
+  <div class="toast" role="status" aria-live="polite" :class="{show:toast.show}" x-text="toast.msg"></div>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/styles/github.min.css">
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.10.0/lib/highlight.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-  <script src="/static/app.js?v=20260822-1"></script>
+  <script src="/static/app.js?v=20260823-4"></script>
   <script defer src="/static/alpine.min.js"></script>
 </body>
 

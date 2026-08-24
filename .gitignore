@@ -24,6 +24,7 @@ data2/
 .ai_memory
 .antigravitycli
 chrome-headless
+playwright-browsers/
 
 # Local runtime files
 *.log

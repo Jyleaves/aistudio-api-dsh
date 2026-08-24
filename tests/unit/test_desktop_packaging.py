@@ -51,8 +51,11 @@ def test_release_packaging_uses_brand_and_icon():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
     assert "icon='image/app-icon/icon.ico'" in spec
+    assert "name='Asteria'" in spec
     assert 'SetupIconFile=image\\app-icon\\icon.ico' in installer
     assert '#define MyAppName "Asteria"' in installer
+    assert '#define MyAppExeName "Asteria.exe"' in installer
+    assert 'Source: "dist\\Asteria\\*"' in installer
     assert "Asteria-setup-*.exe" in workflow
 
 
@@ -63,3 +66,13 @@ def test_release_artifact_name_and_version_are_consistent():
     assert '#define MyAppVersion "1.0.0"' in installer
     assert 'version = "1.0.0"' in package
     assert "OutputBaseFilename=Asteria-setup-{#MyAppVersion}" in installer
+
+
+def test_server_startup_warms_all_accounts_without_blocking_ui():
+    source = (ROOT / "src" / "aistudio_api" / "api" / "app.py").read_text(encoding="utf-8")
+
+    assert "runtime_state.ready = True" in source
+    assert "prepare_all_accounts()" in source
+    assert "asyncio.create_task(" in source
+    assert 'name="aistudio-account-warmup"' in source
+    assert "account_warmup_task.cancel()" in source
