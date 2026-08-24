@@ -32,7 +32,7 @@ RestartApplications=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "installer-languages\ChineseSimplified.isl"
 
 [Files]
 Source: "dist\Asteria-update\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
