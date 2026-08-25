@@ -126,6 +126,8 @@ async def handle_gemini_generate_content(
                                     ),
                                 ),
                                 finishReason="STOP" if not output.function_calls else "FUNCTION_CALL",
+                                groundingMetadata=output.grounding_metadata or None,
+                                urlContextMetadata=output.url_context_metadata or None,
                             )
                         ],
                         usageMetadata=to_gemini_usage_metadata(output.usage),
@@ -181,6 +183,32 @@ def _gemini_stream_payload(event_type: str, value) -> str | None:
         ]
     elif event_type == "thinking" and value:
         parts = [{"text": value, "thought": True}]
+    elif event_type == "grounding_metadata" and value:
+        return "data: " + json.dumps(
+            {
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": []},
+                        "finishReason": None,
+                        "groundingMetadata": value,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ) + "\n\n"
+    elif event_type == "url_context_metadata" and value:
+        return "data: " + json.dumps(
+            {
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": []},
+                        "finishReason": None,
+                        "urlContextMetadata": value,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ) + "\n\n"
     if parts is None:
         return None
     payload = {

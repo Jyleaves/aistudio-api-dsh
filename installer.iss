@@ -4,7 +4,7 @@
 
 #define MyAppName "Asteria"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.6"
+  #define MyAppVersion "1.0.7"
 #endif
 #define MyAppPublisher "Jyleaves"
 #define MyAppURL "https://github.com/Jyleaves/aistudio-api-dsh"

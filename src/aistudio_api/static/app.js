@@ -7,8 +7,9 @@ function app() {
     accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
-    appVersion: '1.0.6',
-    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.6', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
+    appVersion: '1.0.7',
+    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.7', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
+    pluginUpdateInfo: { checking: false, updating: false, checked: false, installed: false, managed: false, available: false, status: 'idle', current: '', latest: '', message: '', error: '', proxy_mode: 'direct', proxy_label: '直连', restart_required: false },
     settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },
@@ -410,13 +411,29 @@ function app() {
     },
     async checkUpdate(silent = false) {
       this.updateInfo.checking = true;
-      try {
-        const r = await this.apiFetch(`/update/check?t=${Date.now()}`, { cache: 'no-store' });
-        const d = await r.json().catch(() => ({}));
+      this.pluginUpdateInfo.checking = true;
+      const stamp = Date.now();
+      const [appResult, pluginResult] = await Promise.allSettled([
+        this.apiFetch(`/update/check?t=${stamp}`, { cache: 'no-store' }),
+        this.apiFetch(`/update/plugin/check?t=${stamp}`, { cache: 'no-store' }),
+      ]);
+      if (appResult.status === 'fulfilled') {
+        const d = await appResult.value.json().catch(() => ({}));
         this.updateInfo = { ...this.updateInfo, ...d, checking: false, checked: true, error: d.error || '' };
-        if (!silent && d.available) this.showToast(`发现 Asteria ${d.latest}`);
-      } catch (e) {
-        this.updateInfo.checking = false; this.updateInfo.checked = true; this.updateInfo.error = '检查更新失败';
+      } else {
+        this.updateInfo = { ...this.updateInfo, checking: false, checked: true, error: '检查 Asteria 更新失败' };
+      }
+      if (pluginResult.status === 'fulfilled') {
+        const d = await pluginResult.value.json().catch(() => ({}));
+        this.pluginUpdateInfo = { ...this.pluginUpdateInfo, ...d, checking: false, checked: true, error: d.error || '' };
+      } else {
+        this.pluginUpdateInfo = { ...this.pluginUpdateInfo, checking: false, checked: true, error: '检查插件更新失败' };
+      }
+      if (!silent) {
+        const available = [];
+        if (this.updateInfo.available) available.push(`Asteria ${this.updateInfo.latest}`);
+        if (this.pluginUpdateInfo.available) available.push(`dsh-gemini-aistudio ${this.pluginUpdateInfo.latest}`);
+        this.showToast(available.length ? `发现更新：${available.join('、')}` : '更新检查完成');
       }
     },
     async waitForUpdateDownload() {
@@ -452,6 +469,37 @@ function app() {
         this.updateInfo = { ...this.updateInfo, ...d, updating: true };
         this.showToast('更新已开始，Asteria 即将重启');
       } catch (e) { this.updateInfo.updating = false; this.showToast('更新进程启动失败'); }
+    },
+    async waitForPluginUpdate() {
+      for (let i = 0; i < 400; i++) {
+        const r = await this.apiFetch(`/update/plugin/status?t=${Date.now()}`, { cache: 'no-store' });
+        const d = await r.json().catch(() => ({}));
+        this.pluginUpdateInfo = { ...this.pluginUpdateInfo, ...d, checked: true };
+        if (d.status === 'updated') { this.showToast('插件更新完成，重启 dsh 后生效'); return true; }
+        if (d.status === 'error') { this.showToast(d.error || '插件更新失败'); return false; }
+        await new Promise(resolve => setTimeout(resolve, 750));
+      }
+      this.pluginUpdateInfo.updating = false;
+      this.showToast('插件更新超时，请稍后检查版本');
+      return false;
+    },
+    async startPluginUpdate() {
+      const ok = await this.askConfirm('更新 dsh 插件', 'Asteria 将通过 dsh 官方插件命令安装已发布的新版本。', {
+        confirmText: '更新插件',
+        hint: '更新完成后需要重启 dsh；如果文件被占用，请先关闭 dsh 再重试。'
+      });
+      if (!ok) return;
+      this.pluginUpdateInfo.updating = true;
+      try {
+        const r = await this.apiFetch('/update/plugin', { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { this.pluginUpdateInfo.updating = false; this.showToast(d.detail || '插件更新失败'); return; }
+        this.pluginUpdateInfo = { ...this.pluginUpdateInfo, ...d, checked: true };
+        await this.waitForPluginUpdate();
+      } catch (e) {
+        this.pluginUpdateInfo.updating = false;
+        this.showToast('插件更新进程启动失败');
+      }
     },
 
     get accountRows() {

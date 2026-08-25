@@ -20,6 +20,11 @@ import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from aistudio_api.infrastructure.update_network import (
+    open_update_url,
+    proxy_mode_label,
+    resolve_update_network,
+)
 from aistudio_api.version import APP_NAME, APP_VERSION, GITHUB_RELEASES_URL
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -53,15 +58,23 @@ class UpdateState:
     asset_size: int | None = None
     downloaded_bytes: int = 0
     resumed: bool = False
+    proxy_mode: str = "direct"
+    proxy_label: str = "直连"
 
 
 class UpdateService:
-    def __init__(self, current_version: str = APP_VERSION, update_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        current_version: str = APP_VERSION,
+        update_root: str | Path | None = None,
+        configured_proxy: str | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self._current_version = current_version
         self._state = UpdateState(current=current_version)
         self._release: dict | None = None
         self._installer: Path | None = None
+        self._configured_proxy = configured_proxy
         self._update_root = Path(update_root) if update_root is not None else Path(tempfile.gettempdir()) / "Asteria" / "updates"
         if getattr(sys, "frozen", False):
             self._cleanup_update_cache()
@@ -75,6 +88,21 @@ class UpdateService:
             for key, value in values.items():
                 setattr(self._state, key, value)
 
+    def _proxy_url(self) -> str | None:
+        if self._configured_proxy is not None:
+            return self._configured_proxy
+        try:
+            from aistudio_api.config import settings
+
+            return settings.proxy_url
+        except Exception:
+            return None
+
+    def _open(self, request: urllib.request.Request, timeout: int):
+        route = resolve_update_network(self._proxy_url())
+        self._set(proxy_mode=route.proxy_mode, proxy_label=proxy_mode_label(route.proxy_mode))
+        return open_update_url(request, timeout, route)
+
     def check(self) -> dict:
         if not getattr(sys, "frozen", False):
             self._set(status="source", message="开发环境不使用桌面版更新通道")
@@ -84,7 +112,7 @@ class UpdateService:
             headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_NAME}/{self._current_version}"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with self._open(request, timeout=15) as response:
                 release = json.loads(response.read().decode("utf-8"))
             tag = str(release.get("tag_name") or "")
             latest = tag.lstrip("vV")
@@ -119,7 +147,12 @@ class UpdateService:
                 asset_size=(asset.get("size") if asset else None),
             )
         except Exception as exc:
-            self._set(status="error", error=f"检查更新失败：{exc}", message="无法连接更新服务器")
+            _LOGGER.warning("Unable to check Asteria release: %s", exc)
+            self._set(
+                status="error",
+                error="检查更新失败：无法连接 GitHub，请检查网络或代理设置",
+                message="无法连接更新服务器",
+            )
         return self.status()
 
     def start_download(self) -> dict:
@@ -214,7 +247,7 @@ class UpdateService:
             headers["Range"] = f"bytes={offset}-"
         request = urllib.request.Request(str(asset["browser_download_url"]), headers=headers)
 
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with self._open(request, timeout=60) as response:
             status = getattr(response, "status", None)
             if status is None and hasattr(response, "getcode"):
                 status = response.getcode()
@@ -292,7 +325,7 @@ class UpdateService:
             str(checksum_asset["browser_download_url"]),
             headers={"User-Agent": f"{APP_NAME}/{self._current_version}"},
         )
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with self._open(request, timeout=15) as response:
             text = response.read().decode("utf-8", errors="replace")
         return text.strip().split()[0] if text.strip() else None
 

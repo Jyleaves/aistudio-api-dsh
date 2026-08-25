@@ -36,6 +36,19 @@ def test_update_action_uses_a_strict_boolean_disabled_state():
     assert ':disabled="updateInfo.updating||updateInfo.error"' not in html
 
 
+def test_update_page_manages_asteria_and_the_gemini_plugin_separately():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert "dsh-gemini-aistudio" in html
+    assert "pluginUpdateInfo.available" in html
+    assert "/update/plugin/check" in script
+    assert "/update/plugin/status" in script
+    assert "startPluginUpdate()" in script
+    assert "Asteria 不会覆盖本地修改" in html
+    assert "proxy_label" in html
+
+
 def test_sidebar_version_badge_uses_the_server_version():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

@@ -88,3 +88,75 @@ def test_parse_text_output_handles_double_wrapped_chunk_bundle():
     assert output.usage["total_tokens"] == 17
     assert output.usage["completion_tokens_details"]["reasoning_tokens"] == 5
     assert output.response_id == "resp_test"
+
+
+def test_parse_response_chunk_preserves_google_search_grounding_metadata():
+    raw_candidate = [
+        [[[None, "Python 3.14.7 is current."],], "model"],
+        1,
+        None,
+        None,
+        [],
+        None,
+        None,
+        [
+            ["<style>.search{}</style>"],
+            [
+                [["https://vertexaisearch.cloud.google.com/grounding-api-redirect/source-1", "python.org"]],
+            ],
+            [
+                [[None, 0, 25, "Python 3.14.7 is current."], [0]],
+            ],
+            None,
+            ["current stable Python release"],
+        ],
+    ]
+    candidate = parse_response_chunk([[raw_candidate]])
+
+    assert candidate.grounding_metadata == {
+        "searchEntryPoint": {"renderedContent": "<style>.search{}</style>"},
+        "groundingChunks": [
+            {
+                "web": {
+                    "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/source-1",
+                    "title": "python.org",
+                }
+            }
+        ],
+        "groundingSupports": [
+            {
+                "segment": {"startIndex": 0, "endIndex": 25, "text": "Python 3.14.7 is current."},
+                "groundingChunkIndices": [0],
+            }
+        ],
+        "webSearchQueries": ["current stable Python release"],
+    }
+    assert candidate.url_context_metadata == {}
+
+
+def test_parse_response_chunk_exposes_direct_url_context_metadata():
+    raw_candidate = [
+        [[[None, "Verified from the page."],], "model"],
+        1,
+        None,
+        None,
+        [],
+        None,
+        None,
+        [
+            None,
+            [[["https://www.python.org/downloads/release/python-3147/", "Python 3.14.7"]]],
+            [[[None, None, 23, "Verified from the page."], [0]]],
+        ],
+    ]
+    candidate = parse_response_chunk([[raw_candidate]])
+
+    assert candidate.url_context_metadata == {
+        "urlMetadata": [
+            {
+                "retrievedUrl": "https://www.python.org/downloads/release/python-3147/",
+                "urlRetrievalStatus": "URL_RETRIEVAL_STATUS_SUCCESS",
+            }
+        ]
+    }
+    assert candidate.grounding_metadata["groundingChunks"][0]["web"]["uri"].endswith("python-3147/")

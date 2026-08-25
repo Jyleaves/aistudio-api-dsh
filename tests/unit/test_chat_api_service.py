@@ -175,6 +175,71 @@ def test_gemini_stream_retries_ambiguous_capture_404_before_output(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_gemini_response_preserves_grounding_and_url_context_metadata(monkeypatch):
+    from aistudio_api.api.schemas import GeminiGenerateContentRequest
+    from aistudio_api.application import api_service_gemini
+
+    monkeypatch.setattr(api_service_gemini, "acquire_request_client", _lease_test_client)
+    monkeypatch.setattr(api_service_gemini, "record_rotator_event", lambda *args, **kwargs: None)
+
+    grounding = {
+        "webSearchQueries": ["current stable Python release"],
+        "groundingChunks": [{"web": {"uri": "https://example.test/source", "title": "Example"}}],
+    }
+    url_context = {
+        "urlMetadata": [
+            {
+                "retrievedUrl": "https://example.test/source",
+                "urlRetrievalStatus": "URL_RETRIEVAL_STATUS_SUCCESS",
+            }
+        ]
+    }
+
+    class Client:
+        async def generate_content(self, **_kwargs):
+            return SimpleNamespace(
+                text="grounded answer",
+                thinking="",
+                usage={},
+                function_calls=[],
+                function_responses=[],
+                images=[],
+                reasoning_images=[],
+                grounding_metadata=grounding,
+                url_context_metadata=url_context,
+            )
+
+    request = GeminiGenerateContentRequest(
+        contents=[{"role": "user", "parts": [{"text": "search"}]}],
+        tools=[{"googleSearch": {}}],
+    )
+    response = asyncio.run(
+        api_service_gemini.handle_gemini_generate_content(
+            "gemini-3.5-flash",
+            request,
+            Client(),
+            stream=False,
+        )
+    )
+
+    candidate = response.model_dump(mode="json", exclude_none=True)["candidates"][0]
+    assert candidate["groundingMetadata"] == grounding
+    assert candidate["urlContextMetadata"] == url_context
+
+
+def test_gemini_stream_payload_can_emit_grounding_metadata():
+    from aistudio_api.application.api_service_gemini import _gemini_stream_payload
+
+    payload = _gemini_stream_payload(
+        "grounding_metadata",
+        {"groundingChunks": [{"web": {"uri": "https://example.test", "title": "Example"}}]},
+    )
+
+    assert payload is not None
+    assert '"groundingMetadata"' in payload
+    assert "https://example.test" in payload
+
+
 def test_normalize_chat_request_tool_calls_and_responses():
     from aistudio_api.application.chat_service import normalize_chat_request
     from aistudio_api.api.schemas import Message

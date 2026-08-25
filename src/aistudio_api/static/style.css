@@ -162,6 +162,13 @@ select.sel:focus,.sel:focus{border-color:var(--green);box-shadow:0 0 0 2px rgba(
 .advanced-panel[open] summary::after{transform:rotate(270deg)}
 .settings-note{padding:11px 13px;border-radius:10px;background:#f3f7f5;color:var(--muted);font-size:12px;line-height:1.6;grid-column:1/-1}
 .update-content{padding:22px;color:var(--muted);font-size:14px;line-height:1.7}
+.update-stack{display:grid;gap:16px}
+.update-card-head{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.update-card-head>div{display:flex;align-items:baseline;gap:9px;min-width:0}
+.update-card-head strong{color:var(--text);font-size:15px}
+.update-card-head small{color:var(--muted);font-size:12px;font-weight:400}
+.btn-sm{padding:7px 12px;font-size:13px}
+.compact-spinner{width:16px;height:16px;border-width:2px}
 .update-progress{margin-top:14px}
 .update-meta{display:flex;flex-wrap:wrap;gap:8px 18px;padding:11px 13px;margin-bottom:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-alt);color:var(--muted)}
 .update-meta b{color:var(--text);font-weight:600}

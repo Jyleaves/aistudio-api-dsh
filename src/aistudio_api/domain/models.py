@@ -30,6 +30,8 @@ class Candidate:
     function_responses: list[dict[str, Any]] = field(default_factory=list)
     thought_signature: str = ""
     sources: list[dict] = field(default_factory=list)
+    grounding_metadata: dict[str, Any] = field(default_factory=dict)
+    url_context_metadata: dict[str, Any] = field(default_factory=dict)
     code_output: str = ""
     finish_reason: int | None = None
     finish_message: str = ""
@@ -75,6 +77,14 @@ class ModelOutput:
     @property
     def sources(self) -> list[dict]:
         return self.candidates[0].sources if self.candidates else []
+
+    @property
+    def grounding_metadata(self) -> dict[str, Any]:
+        return self.candidates[0].grounding_metadata if self.candidates else {}
+
+    @property
+    def url_context_metadata(self) -> dict[str, Any]:
+        return self.candidates[0].url_context_metadata if self.candidates else {}
 
     @property
     def code_output(self) -> str:
@@ -293,6 +303,104 @@ def _parse_usage_metadata(raw_usage: Any) -> dict[str, Any]:
     }
 
 
+def _first_string(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            found = _first_string(item)
+            if found:
+                return found
+    return ""
+
+
+def _parse_grounding_metadata(raw_metadata: Any) -> tuple[dict[str, Any], dict[str, Any], list[dict]]:
+    """Decode AI Studio's sparse grounding wire array into Gemini fields.
+
+    Observed wire layout:
+    ``[search_entry_point, chunks, supports, _, web_search_queries]``.
+    URL Context uses the same chunks/supports slots but returns direct source
+    URLs and may omit search queries.
+    """
+    if not isinstance(raw_metadata, list):
+        return {}, {}, []
+
+    grounding_chunks: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    raw_chunks = raw_metadata[1] if len(raw_metadata) > 1 else None
+    if isinstance(raw_chunks, list):
+        for raw_chunk in raw_chunks:
+            entry = raw_chunk
+            while isinstance(entry, list) and len(entry) == 1 and isinstance(entry[0], list):
+                entry = entry[0]
+            if not isinstance(entry, list) or not entry or not isinstance(entry[0], str):
+                continue
+            uri = entry[0]
+            title = entry[1] if len(entry) > 1 and isinstance(entry[1], str) else ""
+            grounding_chunks.append({"web": {"uri": uri, "title": title}})
+            sources.append({"uri": uri, "title": title})
+
+    grounding_supports: list[dict[str, Any]] = []
+    raw_supports = raw_metadata[2] if len(raw_metadata) > 2 else None
+    if isinstance(raw_supports, list):
+        for raw_support in raw_supports:
+            if not isinstance(raw_support, list) or not raw_support:
+                continue
+            raw_segment = raw_support[0]
+            raw_indices = raw_support[1] if len(raw_support) > 1 else None
+            if not isinstance(raw_segment, list):
+                continue
+            segment: dict[str, Any] = {}
+            start_index = _coerce_int(raw_segment[1] if len(raw_segment) > 1 else None)
+            end_index = _coerce_int(raw_segment[2] if len(raw_segment) > 2 else None)
+            text = raw_segment[3] if len(raw_segment) > 3 and isinstance(raw_segment[3], str) else ""
+            if start_index is not None:
+                segment["startIndex"] = start_index
+            if end_index is not None:
+                segment["endIndex"] = end_index
+            if text:
+                segment["text"] = text
+            indices = []
+            if isinstance(raw_indices, list):
+                indices = [index for item in raw_indices if (index := _coerce_int(item)) is not None]
+            support: dict[str, Any] = {"segment": segment}
+            if indices:
+                support["groundingChunkIndices"] = indices
+            grounding_supports.append(support)
+
+    grounding_metadata: dict[str, Any] = {}
+    rendered_content = _first_string(raw_metadata[0] if raw_metadata else None)
+    if rendered_content:
+        grounding_metadata["searchEntryPoint"] = {"renderedContent": rendered_content}
+    if grounding_chunks:
+        grounding_metadata["groundingChunks"] = grounding_chunks
+    if grounding_supports:
+        grounding_metadata["groundingSupports"] = grounding_supports
+    raw_queries = raw_metadata[4] if len(raw_metadata) > 4 else None
+    if isinstance(raw_queries, list):
+        queries = [query for query in raw_queries if isinstance(query, str) and query.strip()]
+        if queries:
+            grounding_metadata["webSearchQueries"] = queries
+
+    direct_urls = [
+        source["uri"]
+        for source in sources
+        if not source["uri"].startswith("https://vertexaisearch.cloud.google.com/grounding-api-redirect/")
+    ]
+    url_context_metadata = {}
+    if direct_urls:
+        url_context_metadata = {
+            "urlMetadata": [
+                {
+                    "retrievedUrl": uri,
+                    "urlRetrievalStatus": "URL_RETRIEVAL_STATUS_SUCCESS",
+                }
+                for uri in direct_urls
+            ]
+        }
+    return grounding_metadata, url_context_metadata, sources
+
+
 def parse_chunk_usage(chunk: Any) -> dict[str, Any]:
     if not isinstance(chunk, list):
         return {}
@@ -364,6 +472,11 @@ def parse_response_chunk(chunk: list) -> Candidate:
     candidate.finish_reason = raw_candidate[1] if len(raw_candidate) > 1 and isinstance(raw_candidate[1], int) else None
     candidate.finish_message = raw_candidate[3] if len(raw_candidate) > 3 and isinstance(raw_candidate[3], str) else ""
     candidate.safety_ratings = raw_candidate[4] if len(raw_candidate) > 4 and isinstance(raw_candidate[4], list) else []
+    (
+        candidate.grounding_metadata,
+        candidate.url_context_metadata,
+        candidate.sources,
+    ) = _parse_grounding_metadata(raw_candidate[7] if len(raw_candidate) > 7 else None)
     return candidate
 
 
@@ -404,6 +517,12 @@ def parse_text_output(raw: str) -> ModelOutput:
             merged.finish_message = parsed.finish_message
         if parsed.safety_ratings:
             merged.safety_ratings = parsed.safety_ratings
+        if parsed.grounding_metadata:
+            merged.grounding_metadata = parsed.grounding_metadata
+        if parsed.url_context_metadata:
+            merged.url_context_metadata = parsed.url_context_metadata
+        if parsed.sources:
+            merged.sources = parsed.sources
 
     last_chunk = chunks[-1]
     output.usage = _parse_usage_metadata(last_chunk[2] if len(last_chunk) > 2 else None)

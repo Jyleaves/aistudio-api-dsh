@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-08-26
+
+### Added
+
+- Add dsh-gemini-aistudio version discovery and release-tagged updates to the
+  Asteria update page, with separate component states and restart guidance.
+- Display whether update traffic uses the Asteria proxy, an environment
+  proxy, the Windows system proxy, or a direct connection.
+- Preserve Gemini Google Search grounding metadata in compatible responses,
+  including executed queries, source chunks, claim-to-source support ranges,
+  and the Search Suggestions entry point.
+- Expose successful direct URL retrievals through Gemini-compatible
+  `urlContextMetadata` for callers that combine Google Search and URL Context.
+
+### Changed
+
+- Route desktop downloads, source Git updates, and dsh plugin updates through
+  one proxy-resolution policy: explicit Asteria configuration, standard proxy
+  environment variables, Windows system proxy, then direct access.
+- Preserve local `link:`, `file:`, and `workspace:` plugin installations instead
+  of replacing development checkouts during automatic updates.
+
+### Fixed
+
+- Use the official dsh plugin command with an immutable GitHub release tag and
+  pass proxy settings to both Git and pnpm, while reporting Windows file locks
+  with actionable restart guidance.
+- Stop the Gemini response parser and API schema from discarding AI Studio's
+  grounding fields. Native dsh searches can now audit sources returned by the
+  user-selected Gemini model instead of rejecting valid grounded responses as
+  source-less text.
+
 ## [1.0.6] - 2026-08-25
 
 ### Fixed
@@ -176,7 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.6...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.7...HEAD
+[1.0.7]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.3...v1.0.4

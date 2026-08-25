@@ -189,6 +189,8 @@ class GeminiContentResponse(BaseModel):
 class GeminiCandidateResponse(BaseModel):
     content: GeminiContentResponse
     finishReason: str | None = None
+    groundingMetadata: dict[str, Any] | None = None
+    urlContextMetadata: dict[str, Any] | None = None
 
 
 class GeminiGenerateContentResponse(BaseModel):

@@ -146,6 +146,10 @@ class StreamingGateway:
                         yield ("images", candidate.images)
                     if candidate.text:
                         yield ("body", candidate.text)
+                    if candidate.grounding_metadata:
+                        yield ("grounding_metadata", candidate.grounding_metadata)
+                    if candidate.url_context_metadata:
+                        yield ("url_context_metadata", candidate.url_context_metadata)
                     if candidate.thought_signature:
                         yield ("thought_signature", candidate.thought_signature)
 

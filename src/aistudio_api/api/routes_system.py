@@ -170,11 +170,13 @@ async def save_settings(payload: SettingsPayload):
 
 
 def _run_git(*args: str, timeout: int = 45) -> subprocess.CompletedProcess[str]:
-    from aistudio_api.config import PROJECT_ROOT
+    from aistudio_api.config import PROJECT_ROOT, settings
+    from aistudio_api.infrastructure.update_network import resolve_update_network, update_subprocess_environment
 
     return subprocess.run(
         ["git", *args],
         cwd=PROJECT_ROOT,
+        env=update_subprocess_environment(resolve_update_network(settings.proxy_url)),
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -243,6 +245,30 @@ async def update_status():
     return update_service.status()
 
 
+@protected_router.get("/update/plugin/check")
+async def check_plugin_update():
+    from aistudio_api.infrastructure.plugin_update_service import plugin_update_service
+
+    return await asyncio.to_thread(plugin_update_service.check)
+
+
+@protected_router.get("/update/plugin/status")
+async def plugin_update_status():
+    from aistudio_api.infrastructure.plugin_update_service import plugin_update_service
+
+    return plugin_update_service.status()
+
+
+@protected_router.post("/update/plugin")
+async def start_plugin_update():
+    from aistudio_api.infrastructure.plugin_update_service import plugin_update_service
+
+    try:
+        return await asyncio.to_thread(plugin_update_service.start_update)
+    except RuntimeError as exc:
+        raise HTTPException(409, detail=str(exc))
+
+
 @protected_router.post("/update")
 async def start_update(runtime_state=Depends(get_runtime_state)):
     from aistudio_api.infrastructure.update_service import update_service
@@ -281,9 +307,12 @@ async def start_update(runtime_state=Depends(get_runtime_state)):
     log_path.parent.mkdir(parents=True, exist_ok=True)
     shell = "powershell.exe" if os.name == "nt" else "pwsh"
     with log_path.open("a", encoding="utf-8") as log_file:
+        from aistudio_api.infrastructure.update_network import resolve_update_network, update_subprocess_environment
+
         subprocess.Popen(
             [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Port", str(settings.port), "-Restart"],
             cwd=PROJECT_ROOT,
+            env=update_subprocess_environment(resolve_update_network(settings.proxy_url)),
             stdout=log_file,
             stderr=subprocess.STDOUT,
             creationflags=0x08000000 if os.name == "nt" else 0,
