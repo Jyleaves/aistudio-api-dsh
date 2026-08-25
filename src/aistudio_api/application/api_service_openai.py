@@ -19,6 +19,7 @@ from aistudio_api.application.api_service_common import (
     MAX_RETRIES,
     acquire_request_client,
     build_inline_image_parts,
+    capture_retry_reason,
     image_response,
     logger,
     mark_request_worker_unhealthy,
@@ -341,6 +342,7 @@ def _build_streaming_response(
             chat_id = new_chat_id()
             final_usage = None
             saw_tool_calls = False
+            next_tool_call_index = 0
             for stream_attempt in range(MAX_RETRIES):
                 async with acquire_request_client(
                     client,
@@ -376,11 +378,16 @@ def _build_streaming_response(
                                 yield sse_chunk(chat_id, model, "", thinking=text, include_usage=include_usage)
                             elif event_type == "tool_calls" and text:
                                 saw_tool_calls = True
+                                openai_tool_calls = to_openai_tool_calls(
+                                    text if isinstance(text, list) else [],
+                                    start_index=next_tool_call_index,
+                                )
+                                next_tool_call_index += len(openai_tool_calls)
                                 yield sse_chunk(
                                     chat_id,
                                     model,
                                     "",
-                                    tool_calls=to_openai_tool_calls(text if isinstance(text, list) else []),
+                                    tool_calls=openai_tool_calls,
                                     include_usage=include_usage,
                                 )
                             elif event_type == "usage":
@@ -396,9 +403,21 @@ def _build_streaming_response(
                             continue
                         raise
                     except RequestError as exc:
-                        if exc.status == 204 and stream_attempt == 0:
-                            logger.warning("Stream 收到 204，清理 snapshot 缓存后重试一次")
+                        retry_reason = capture_retry_reason(
+                            exc,
+                            attempt=stream_attempt,
+                            has_yielded_data=has_yielded_data,
+                        )
+                        if retry_reason is not None:
+                            logger.warning(
+                                "Stream 捕获模板失效（%s），清理缓存后重试 %d/%d",
+                                retry_reason,
+                                stream_attempt + 1,
+                                MAX_RETRIES,
+                            )
                             stream_client.clear_snapshot_cache()
+                            if retry_reason == "ambiguous_service" and account_id:
+                                attempted_accounts.add(account_id)
                             continue
                         raise
                     except AuthError as exc:

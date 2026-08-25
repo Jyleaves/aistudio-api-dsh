@@ -39,6 +39,10 @@ class OpenAIToolCall(BaseModel):
     function: OpenAIFunctionCallPayload
 
 
+class OpenAIStreamingToolCall(OpenAIToolCall):
+    index: int
+
+
 class OpenAIChatMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
@@ -71,7 +75,7 @@ class OpenAIChatDelta(BaseModel):
     content: str | None = None
     thinking: str | None = None
     reasoning_content: str | None = None
-    tool_calls: list[OpenAIToolCall] | None = None
+    tool_calls: list[OpenAIStreamingToolCall] | None = None
 
     @model_validator(mode="after")
     def _mirror_reasoning(self):

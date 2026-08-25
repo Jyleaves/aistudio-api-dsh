@@ -29,6 +29,7 @@ from aistudio_api.api.response_models import (
     OpenAIChatDelta,
     OpenAIChatMessage,
     OpenAIFunctionCallPayload,
+    OpenAIStreamingToolCall,
     OpenAIToolCall,
     OpenAIUsage,
 )
@@ -101,7 +102,7 @@ def sse_chunk(
     content: str,
     finish: str | None = None,
     thinking: str | None = None,
-    tool_calls: list[dict[str, Any]] | None = None,
+    tool_calls: list[dict[str, Any] | OpenAIStreamingToolCall] | None = None,
     include_usage: bool = True,
 ) -> str:
     data = OpenAIChatCompletionChunk(
@@ -234,11 +235,20 @@ def _function_call_arguments(function_call: dict[str, Any]) -> str:
     return "{}"
 
 
-def to_openai_tool_calls(function_calls: list[dict[str, Any]]) -> list[OpenAIToolCall]:
-    tool_calls: list[OpenAIToolCall] = []
+def to_openai_tool_calls(
+    function_calls: list[dict[str, Any]],
+    *,
+    start_index: int | None = None,
+) -> list[OpenAIToolCall | OpenAIStreamingToolCall]:
+    tool_calls: list[OpenAIToolCall | OpenAIStreamingToolCall] = []
     for idx, function_call in enumerate(function_calls):
+        tool_call_type = OpenAIToolCall if start_index is None else OpenAIStreamingToolCall
+        tool_call_fields: dict[str, Any] = {}
+        if start_index is not None:
+            tool_call_fields["index"] = start_index + idx
         tool_calls.append(
-            OpenAIToolCall(
+            tool_call_type(
+                **tool_call_fields,
                 id=f"call_{uuid.uuid4().hex[:12]}_{idx}",
                 function=OpenAIFunctionCallPayload(
                     name=function_call.get("name", "unknown"),

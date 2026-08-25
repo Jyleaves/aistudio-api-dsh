@@ -1,8 +1,13 @@
+import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
 from aistudio_api.api.responses import anthropic_message_response
 from aistudio_api.api.schemas import AnthropicMessageRequest
 from aistudio_api.application.chat_service import normalize_anthropic_request
 from aistudio_api.infrastructure.gateway.wire_codec import AistudioWireCodec
 from aistudio_api.infrastructure.gateway.wire_types import AistudioPart
+from aistudio_api.domain.errors import RequestError
 
 
 def test_aistudio_part_encodes_function_call_and_response():
@@ -140,3 +145,47 @@ def test_anthropic_explicit_thinking_keeps_high_wire_level():
     )
     normalized = normalize_anthropic_request(req)
     assert normalized["generation_config_overrides"]["thinking_config"] == [1, None, None, 3]
+
+
+def test_anthropic_stream_retries_ambiguous_capture_404_before_output(monkeypatch):
+    from aistudio_api.application import api_service_anthropic
+
+    @asynccontextmanager
+    async def lease(client, **_kwargs):
+        yield SimpleNamespace(client=client, account_id=None, worker_id="test", succeeded=False)
+
+    monkeypatch.setattr(api_service_anthropic, "acquire_request_client", lease)
+    monkeypatch.setattr(api_service_anthropic, "record_rotator_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(api_service_anthropic.runtime_state, "busy_lock", asyncio.Lock())
+
+    class Client:
+        def __init__(self):
+            self.attempts = 0
+            self.clears = 0
+
+        def clear_snapshot_cache(self):
+            self.clears += 1
+
+        async def stream_generate_content(self, **_kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RequestError(
+                    404,
+                    "Ambiguous request for service '' and method '/GenerativeService.StreamGenerateContent'",
+                )
+            yield "body", "recovered-anthropic"
+
+    async def scenario():
+        client = Client()
+        request = AnthropicMessageRequest(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+        )
+        response = await api_service_anthropic.handle_anthropic_messages(request, client)
+        body = "".join([chunk async for chunk in response.body_iterator])
+        assert "recovered-anthropic" in body
+        assert client.attempts == 2
+        assert client.clears == 1
+
+    asyncio.run(scenario())

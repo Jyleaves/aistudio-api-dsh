@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from aistudio_api.api.schemas import ChatRequest
 from aistudio_api.application.api_service import handle_chat
+from aistudio_api.domain.errors import RequestError
 
 
 class _CaptureChatClient:
@@ -76,6 +77,102 @@ def test_handle_chat_retries_small_budget_empty_reasoning_once(monkeypatch):
 
     assert response.choices[0].message.content == "visible"
     assert client.max_tokens == [64, 512]
+
+
+def test_stream_retries_ambiguous_capture_404_before_output(monkeypatch):
+    from aistudio_api.application import api_service_openai
+
+    monkeypatch.setattr(api_service_openai, "acquire_request_client", _lease_test_client)
+    monkeypatch.setattr(api_service_openai, "record_rotator_event", lambda *args, **kwargs: None)
+
+    class Client:
+        def __init__(self):
+            self.attempts = 0
+            self.clears = 0
+
+        def clear_snapshot_cache(self):
+            self.clears += 1
+
+        async def stream_generate_content(self, **_kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RequestError(
+                    404,
+                    "Ambiguous request for service '' and method '/GenerativeService.StreamGenerateContent'",
+                )
+            yield "body", "recovered"
+
+    async def scenario():
+        client = Client()
+        request = ChatRequest(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            stream=True,
+            tools=[],
+        )
+        response = await handle_chat(request, client)
+        body = "".join([chunk async for chunk in response.body_iterator])
+        assert "recovered" in body
+        assert client.attempts == 2
+        assert client.clears == 1
+
+    asyncio.run(scenario())
+
+
+def test_capture_retry_classification_is_narrow():
+    from aistudio_api.application.api_service_common import MAX_RETRIES, capture_retry_reason
+
+    ambiguous = RequestError(
+        404,
+        "Ambiguous request for service '' and method '/GenerativeService.StreamGenerateContent'",
+    )
+    assert capture_retry_reason(ambiguous, attempt=0, has_yielded_data=False) == "ambiguous_service"
+    assert capture_retry_reason(ambiguous, attempt=0, has_yielded_data=True) is None
+    assert capture_retry_reason(ambiguous, attempt=MAX_RETRIES - 1, has_yielded_data=False) is None
+    assert capture_retry_reason(RequestError(404, "Not found"), attempt=0, has_yielded_data=False) is None
+
+
+def test_gemini_stream_retries_ambiguous_capture_404_before_output(monkeypatch):
+    from aistudio_api.api.schemas import GeminiGenerateContentRequest
+    from aistudio_api.application import api_service_gemini
+
+    monkeypatch.setattr(api_service_gemini, "acquire_request_client", _lease_test_client)
+    monkeypatch.setattr(api_service_gemini, "record_rotator_event", lambda *args, **kwargs: None)
+
+    class Client:
+        def __init__(self):
+            self.attempts = 0
+            self.clears = 0
+
+        def clear_snapshot_cache(self):
+            self.clears += 1
+
+        async def stream_generate_content(self, **_kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RequestError(
+                    404,
+                    "Ambiguous request for service '' and method '/GenerativeService.StreamGenerateContent'",
+                )
+            yield "body", "recovered-native"
+
+    async def scenario():
+        client = Client()
+        request = GeminiGenerateContentRequest(
+            contents=[{"role": "user", "parts": [{"text": "hello"}]}],
+        )
+        response = await api_service_gemini.handle_gemini_generate_content(
+            "gemini-3.7-flash",
+            request,
+            client,
+            stream=True,
+        )
+        body = "".join([chunk async for chunk in response.body_iterator])
+        assert "recovered-native" in body
+        assert client.attempts == 2
+        assert client.clears == 1
+
+    asyncio.run(scenario())
 
 
 def test_normalize_chat_request_tool_calls_and_responses():

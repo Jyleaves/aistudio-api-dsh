@@ -85,11 +85,18 @@ def test_frozen_desktop_runtime_keeps_the_pywebview_api():
 def test_release_artifact_name_and_version_are_consistent():
     installer = (ROOT / "installer.iss").read_text(encoding="utf-8")
     updater = (ROOT / "installer-update.iss").read_text(encoding="utf-8")
+    version_module = (ROOT / "src" / "aistudio_api" / "version.py").read_text(encoding="utf-8")
+    script = (ROOT / "src" / "aistudio_api" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (ROOT / "src" / "aistudio_api" / "static" / "index.html").read_text(encoding="utf-8")
     package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project_version = package["project"]["version"]
 
     assert f'#define MyAppVersion "{project_version}"' in installer
     assert f'#define MyAppVersion "{project_version}"' in updater
+    assert f'APP_VERSION = "{project_version}"' in version_module
+    assert f"appVersion: '{project_version}'" in script
+    assert f"current: '{project_version}'" in script
+    assert f">v{project_version}</span>" in html
     assert "OutputBaseFilename=Asteria-setup-{#MyAppVersion}" in installer
     assert "OutputBaseFilename=Asteria-update-{#MyAppVersion}" in updater
     assert "skipifsilent" not in next(line for line in updater.splitlines() if line.startswith("Filename:"))

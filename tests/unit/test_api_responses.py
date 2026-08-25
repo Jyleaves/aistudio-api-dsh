@@ -107,6 +107,7 @@ def test_chat_completion_response_maps_function_calls_to_openai_tool_calls():
     assert choice.finish_reason == "tool_calls"
     assert choice.message.tool_calls[0].function.name == "getWeather"
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"city": "Shanghai"}
+    assert "index" not in response.model_dump(mode="json")["choices"][0]["message"]["tool_calls"][0]
 
 
 def test_sse_chunk_can_emit_tool_calls_delta():
@@ -116,6 +117,7 @@ def test_sse_chunk_can_emit_tool_calls_delta():
         "",
         tool_calls=[
             {
+                "index": 0,
                 "id": "call_test",
                 "type": "function",
                 "function": {"name": "getWeather", "arguments": "{\"city\":\"Shanghai\"}"},
@@ -126,7 +128,26 @@ def test_sse_chunk_can_emit_tool_calls_delta():
     data = json.loads(payload.removeprefix("data: ").strip())
 
     assert data["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "getWeather"
+    assert data["choices"][0]["delta"]["tool_calls"][0]["index"] == 0
     assert data["usage"] is None
+
+
+def test_streaming_tool_calls_can_receive_monotonic_indexes():
+    from aistudio_api.api.responses import to_openai_tool_calls
+
+    first = to_openai_tool_calls(
+        [{"name": "todo_write", "args": {"todos": []}}],
+        start_index=0,
+    )
+    second = to_openai_tool_calls(
+        [{"name": "read", "args": {"file_path": "README.md"}}],
+        start_index=len(first),
+    )
+
+    assert first[0].index == 0
+    assert second[0].index == 1
+    assert json.loads(first[0].function.arguments) == {"todos": []}
+    assert json.loads(second[0].function.arguments) == {"file_path": "README.md"}
 
 
 def test_to_gemini_parts_keeps_function_call_and_response_parts():

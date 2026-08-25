@@ -24,6 +24,7 @@ from aistudio_api.api.state import runtime_state
 from aistudio_api.application.api_service_common import (
     MAX_RETRIES,
     acquire_request_client,
+    capture_retry_reason,
     logger,
     mark_request_worker_unhealthy,
     record_rotator_event,
@@ -457,9 +458,21 @@ def _build_anthropic_streaming_response(
                             continue
                         raise exc
                     except RequestError as exc:
-                        if exc.status == 204 and stream_attempt == 0:
-                            logger.warning("Anthropic stream 收到 204，清理 snapshot 缓存后重试一次")
+                        retry_reason = capture_retry_reason(
+                            exc,
+                            attempt=stream_attempt,
+                            has_yielded_data=has_yielded_model_data,
+                        )
+                        if retry_reason is not None:
+                            logger.warning(
+                                "Anthropic stream 捕获模板失效（%s），清理缓存后重试 %d/%d",
+                                retry_reason,
+                                stream_attempt + 1,
+                                MAX_RETRIES,
+                            )
                             stream_client.clear_snapshot_cache()
+                            if retry_reason == "ambiguous_service" and account_id:
+                                attempted_accounts.add(account_id)
                             continue
                         raise
                     except AuthError as exc:

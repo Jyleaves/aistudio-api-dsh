@@ -22,11 +22,33 @@ from aistudio_api.api.response_models import (
 )
 from aistudio_api.api.state import runtime_state
 from aistudio_api.config import settings
+from aistudio_api.domain.errors import RequestError
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
 from aistudio_api.infrastructure.gateway.wire_types import AistudioPart
 
 logger = logging.getLogger("aistudio.server")
 MAX_RETRIES = max(1, int(settings.account_max_retries))
+
+
+def capture_retry_reason(
+    error: RequestError,
+    *,
+    attempt: int,
+    has_yielded_data: bool,
+) -> str | None:
+    """Classify only pre-output failures that a fresh capture can recover."""
+    if has_yielded_data or attempt >= MAX_RETRIES - 1:
+        return None
+    if error.status == 204 and attempt == 0:
+        return "empty_response"
+    message = str(error)
+    if (
+        error.status == 404
+        and "Ambiguous request for service" in message
+        and "GenerateContent" in message
+    ):
+        return "ambiguous_service"
+    return None
 
 
 @dataclass

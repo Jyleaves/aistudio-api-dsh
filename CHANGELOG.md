@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-08-25
+
+### Fixed
+
+- Emit monotonically increasing OpenAI stream indexes for consecutive function
+  calls, preventing clients from concatenating one tool's JSON arguments onto
+  the next tool call, while keeping stream-only indexes out of non-streaming
+  completion payloads.
+- Recover OpenAI-, Gemini-, and Anthropic-compatible streams from AI Studio's
+  specific pre-output ambiguous-service 404 by clearing the stale capture
+  template and retrying on another account.
+- Keep the backend, desktop version badge, update state, and both Windows
+  installer manifests on one release version.
+
 ## [1.0.4] - 2026-08-25
 
 ### Fixed
@@ -147,7 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.1...v1.0.2
