@@ -64,13 +64,18 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
     cleanup_paths: list[str] = []
     saw_images = False
 
-    # Build tool_call_id → function name map from assistant tool_calls
-    tool_call_names: dict[str, str] = {}
+    # Build tool_call_id → invocation context from assistant tool_calls. AI
+    # Studio's private web wire cannot reliably round-trip public Gemini
+    # function history, so the matching result message carries this context.
+    tool_call_context: dict[str, tuple[str, str]] = {}
     for msg in messages:
         if msg.tool_calls:
             for tc in msg.tool_calls:
                 if tc.id and tc.function and tc.function.name:
-                    tool_call_names[tc.id] = tc.function.name
+                    tool_call_context[tc.id] = (
+                        tc.function.name,
+                        tc.function.arguments or "{}",
+                    )
 
     for msg in messages:
         role = (msg.role or "user").lower()
@@ -85,13 +90,22 @@ def normalize_chat_request(messages, requested_model: str, tmp_dir: str = "/tmp"
         text_parts: list[str] = []
         image_paths: list[str] = []
 
-        # tool result → user role with marker
+        # Preserve the complete invocation beside its result. This gives the
+        # next model step the prior arguments/state without inserting a fake
+        # assistant tool-call syntax that Gemini may echo as visible text.
         if role == "tool":
             raw = _message_text_content(msg.content) or ""
-            fname = tool_call_names.get(msg.tool_call_id or "", "")
-            tagged = f"<tool_result name=\"{fname}\">\n{raw}\n</tool_result>" if fname else f"<tool_result>\n{raw}\n</tool_result>"
-            parts.append(AistudioPart(text=tagged))
-            text_parts.append(tagged)
+            invocation = tool_call_context.get(msg.tool_call_id or "")
+            fname = invocation[0] if invocation else (msg.name or "unknown")
+            arguments = invocation[1] if invocation else "{}"
+            record = (
+                "A previously requested tool execution completed.\n"
+                f"Tool: {fname}\n"
+                f"Arguments: {arguments}\n"
+                f"Result:\n{raw}"
+            )
+            parts.append(AistudioPart(text=record))
+            text_parts.append(record)
             contents.append(AistudioContent(role="user", parts=parts))
             capture_texts.append(raw)
             continue
@@ -186,8 +200,14 @@ def inline_data_to_file(mime_type: str, data: str, tmp_dir: str = "/tmp") -> str
 
 
 def encode_schema_to_wire(schema: dict, *, include_required: bool = True) -> list:
+    # AI Studio rejects TYPE_UNSPECIFIED (wire value 0), while JSON Schema
+    # legitimately allows schemas that omit ``type`` or express nullable
+    # variants through anyOf/oneOf. Normalize every declaration before it
+    # reaches the protobuf-shaped wire payload so third-party dsh tools cannot
+    # make the whole request fail with HTTP 400.
+    schema = _sanitize_schema_for_wire(schema)
     schema_type = schema.get("type")
-    type_code = SCHEMA_TYPE_CODES.get(schema_type, 0)
+    type_code = SCHEMA_TYPE_CODES[schema_type]
     wire = [type_code]
 
     if schema_type == "array" and isinstance(schema.get("items"), dict):
@@ -657,7 +677,11 @@ def _sanitize_schema_for_wire(schema: dict | None) -> dict:
         elif isinstance(schema.get("items"), dict):
             schema_type = "array"
         else:
-            schema_type = "string"
+            # An untyped tool argument means "any JSON value". AI Studio has
+            # no equivalent union type; object is the least destructive
+            # fallback for agent tools because it preserves structured args
+            # instead of coercing them into a JSON string.
+            schema_type = "object"
 
     sanitized: dict[str, Any] = {"type": schema_type}
     if schema_type == "object":
@@ -667,10 +691,15 @@ def _sanitize_schema_for_wire(schema: dict | None) -> dict:
             for name, prop in raw_properties.items():
                 if isinstance(name, str):
                     properties[name] = _sanitize_schema_for_wire(prop if isinstance(prop, dict) else None)
-        sanitized["properties"] = properties
+            sanitized["properties"] = properties
         required = schema.get("required")
         if isinstance(required, list):
             sanitized["required"] = [name for name in required if isinstance(name, str) and name in properties]
+        property_ordering = schema.get("propertyOrdering")
+        if isinstance(property_ordering, list):
+            sanitized["propertyOrdering"] = [
+                name for name in property_ordering if isinstance(name, str) and name in properties
+            ]
     elif schema_type == "array":
         sanitized["items"] = _sanitize_schema_for_wire(schema.get("items") if isinstance(schema.get("items"), dict) else None)
     return sanitized

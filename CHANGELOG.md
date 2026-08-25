@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-08-25
+
+### Fixed
+
+- Normalize omitted, nullable, and union-style JSON Schema types before
+  encoding AI Studio function declarations. Third-party dsh tools can no
+  longer make an otherwise valid request fail with HTTP 400 by exposing an
+  untyped nested argument.
+- Preserve each OpenAI-compatible tool invocation's name, original arguments,
+  and matching result in Gemini conversation history. Multi-step agents can
+  now advance task lists and continue from prior tool state instead of
+  repeatedly restarting the first step.
+- Accept the optional OpenAI tool-message `name` field as a fallback when a
+  client cannot provide a matching `tool_call_id`.
+
 ## [1.0.5] - 2026-08-25
 
 ### Fixed
@@ -161,7 +176,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.2...v1.0.3

@@ -203,16 +203,44 @@ def test_normalize_chat_request_tool_calls_and_responses():
     res = normalize_chat_request(messages, "gemini-3.5-flash")
     contents = res["contents"]
 
-    # 当前实现走文本协议：assistant 的 tool_calls 消息不产生独立 content，
-    # tool 结果以 <tool_result> 标记的 user 消息传给模型。
     assert len(contents) == 2
 
     # Check User Message
     assert contents[0].role == "user"
     assert contents[0].parts[0].text == "What is the weather like in Beijing?"
 
-    # Check Tool Response Message（带函数名标记）
+    # The matching result carries the exact call arguments as neutral history.
     assert contents[1].role == "user"
-    assert '<tool_result name="get_weather">' in contents[1].parts[0].text
+    assert "Tool: get_weather" in contents[1].parts[0].text
+    assert 'Arguments: {"location": "Beijing"}' in contents[1].parts[0].text
     assert '"temperature": 24' in contents[1].parts[0].text
+
+
+def test_normalize_chat_request_tool_history_tolerates_non_object_payloads():
+    from aistudio_api.application.chat_service import normalize_chat_request
+    from aistudio_api.api.schemas import Message
+
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                {
+                    "id": "call_bad",
+                    "type": "function",
+                    "function": {"name": "custom_tool", "arguments": "not-json"},
+                }
+            ],
+        ),
+        Message(
+            role="tool",
+            tool_call_id="call_bad",
+            content='["first", "second"]',
+        ),
+    ]
+
+    contents = normalize_chat_request(messages, "gemini-3.5-flash")["contents"]
+    assert len(contents) == 1
+    assert "Tool: custom_tool" in contents[0].parts[0].text
+    assert "Arguments: not-json" in contents[0].parts[0].text
+    assert '["first", "second"]' in contents[0].parts[0].text
 

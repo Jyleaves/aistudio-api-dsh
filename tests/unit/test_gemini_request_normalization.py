@@ -362,3 +362,62 @@ def test_normalize_openai_tools_omits_required_from_function_schema_wire():
 
     schema = normalize_openai_tools(req.tools)[0][1][0][2]
     assert len(schema) <= 7 or schema[7] is None
+
+
+def test_normalize_openai_tools_repairs_untyped_nested_tool_arguments():
+    req = ChatRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "dev_stage_call",
+                    "description": "Call a staged tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "args": {"description": "Optional JSON arguments"},
+                        },
+                        "required": ["name"],
+                    },
+                },
+            }
+        ],
+    )
+
+    schema = normalize_openai_tools(req.tools)[0][1][0][2]
+    args_schema = dict(schema[6])["args"]
+
+    assert schema[0] == 6
+    assert args_schema[0] == 6
+    assert all(node[0] != 0 for node in (schema, args_schema))
+
+
+def test_normalize_gemini_tools_repairs_untyped_nested_tool_arguments():
+    req = GeminiGenerateContentRequest.model_validate(
+        {
+            "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "dev_stage_add",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "parameters": {"description": "Optional parameter schema"},
+                                },
+                            },
+                        }
+                    ]
+                }
+            ],
+        }
+    )
+
+    normalized = normalize_gemini_request(req, "models/gemini-3.7-flash")
+    schema = normalized["tools"][0][1][0][2]
+    nested_schema = dict(schema[6])["parameters"]
+
+    assert nested_schema[0] == 6
