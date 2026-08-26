@@ -30,6 +30,7 @@ from aistudio_api.infrastructure.gateway.wire_types import AistudioContent
 from aistudio_api.infrastructure.gateway.model_catalog import filter_gemini_models
 
 log = logging.getLogger("aistudio.session")
+_stream_monotonic = time.monotonic
 
 AI_STUDIO_URL = "https://aistudio.google.com/prompts/new_chat?model=gemini-3.7-flash"
 AI_STUDIO_URL_FALLBACK = "https://aistudio.google.com/app/prompts/new_chat"
@@ -392,13 +393,12 @@ class BrowserSession:
         cancel_event: threading.Event,
     ):
         """Sync method: sends XHR request and consumes page-side stream events."""
-        import time as _t
-        _t0 = _t.time()
+        started_at = _stream_monotonic()
 
         page, captured_url, captured_headers = self._prepare_streaming_sync()
         if is_camoufox_engine():
             captured_headers = {"content-type": "application/json"}
-        log.debug(f"[stream] prep done in {_t.time()-_t0:.1f}s, url={captured_url}")
+        log.debug("[stream] prep done in %.1fs, url=%s", _stream_monotonic() - started_at, captured_url)
 
         timeout_s = timeout_ms / 1000
         rid = uuid.uuid4().hex[:8]
@@ -482,7 +482,11 @@ class BrowserSession:
                 xhr.setRequestHeader(k, h[k]);
             }
             xhr.withCredentials = true;
-            xhr.timeout = args.timeout * 1000;
+            // Do not impose a fixed lifetime on a streaming response. Python
+            // enforces an inactivity timeout below and resets it whenever a
+            // status or chunk arrives. A fixed XHR timeout used to abort
+            // healthy long-running responses at exactly timeout_stream.
+            xhr.timeout = 0;
 
             xhr.onreadystatechange = function() {
                 pushStatus(xhr);
@@ -517,11 +521,11 @@ class BrowserSession:
             "rid": rid,
         })
 
-        deadline = _t.time() + timeout_s
+        idle_deadline = _stream_monotonic() + timeout_s
         status_sent = False
         completed = False
         try:
-            while _t.time() < deadline:
+            while _stream_monotonic() < idle_deadline:
                 if cancel_event.is_set():
                     log.debug("[stream] cancellation requested for %s", rid)
                     break
@@ -533,18 +537,20 @@ class BrowserSession:
                     continue
                 if event_type == "status":
                     status = event.get("status", 0)
-                    log.debug(f"[stream] got status={status} after {_t.time()-_t0:.1f}s")
+                    log.debug("[stream] got status=%s after %.1fs", status, _stream_monotonic() - started_at)
                     loop.call_soon_threadsafe(queue.put_nowait, ("status", status))
                     status_sent = True
+                    idle_deadline = _stream_monotonic() + timeout_s
                     continue
                 if event_type == "chunk":
                     text = event.get("text") or ""
                     if text:
                         loop.call_soon_threadsafe(queue.put_nowait, ("chunk", text.encode("utf-8")))
+                        idle_deadline = _stream_monotonic() + timeout_s
                     continue
                 if event_type == "error":
                     message = event.get("message", "unknown error")
-                    log.debug(f"[stream] error after {_t.time()-_t0:.1f}s: {message}")
+                    log.debug("[stream] error after %.1fs: %s", _stream_monotonic() - started_at, message)
                     loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(f"streaming request failed: {message}")))
                     loop.call_soon_threadsafe(queue.put_nowait, None)
                     return
@@ -554,9 +560,13 @@ class BrowserSession:
                 if event_type == "aborted":
                     break
 
-            if not status_sent:
-                log.debug(f"[stream] timeout after {_t.time()-_t0:.1f}s before response status")
-                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError("streaming request timeout: no response status")))
+            if not completed:
+                if status_sent:
+                    message = f"streaming request timeout: no data received for {timeout_s:g}s"
+                else:
+                    message = f"streaming request timeout: no response status after {timeout_s:g}s"
+                log.debug("[stream] %s after %.1fs", message, _stream_monotonic() - started_at)
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", RuntimeError(message)))
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 return
 

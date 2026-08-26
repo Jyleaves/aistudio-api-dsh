@@ -13,7 +13,10 @@ from aistudio_api.application import api_service_common
 from aistudio_api.application.account_service import AccountService
 from aistudio_api.infrastructure.account.login_service import LoginService, LoginSession, LoginStatus
 from aistudio_api.infrastructure.gateway.client import AIStudioClient
+from aistudio_api.infrastructure.gateway.capture import CapturedRequest
 from aistudio_api.infrastructure.gateway.session import BrowserSession, STREAM_CLEANUP_JS
+from aistudio_api.infrastructure.gateway.streaming import StreamingGateway
+from aistudio_api.domain.errors import RequestError
 
 
 def test_aistudio_url_check_uses_host_not_continue_query():
@@ -80,6 +83,90 @@ def test_streaming_page_state_is_released_after_success_and_cancellation():
         assert tag == "error"
         assert "no response status" in str(error)
         assert await cancelled_queue.get() is None
+
+    asyncio.run(scenario())
+
+
+def test_streaming_timeout_is_inactivity_based(monkeypatch):
+    class Page:
+        def __init__(self):
+            self.events = [
+                {"type": "status", "status": 200},
+                {"type": "chunk", "text": "still working"},
+                {"type": "done"},
+            ]
+            self.cleanup_calls = []
+            self.setup_script = ""
+
+        def evaluate(self, expression, argument=None):
+            if expression == STREAM_CLEANUP_JS:
+                self.cleanup_calls.append(argument)
+                return None
+            if expression == "rid => window.__stream_next[rid](250)":
+                return self.events.pop(0)
+            self.setup_script = expression
+            return None
+
+    # Total elapsed time exceeds the one-second timeout, while every gap
+    # between status/chunk/done remains below it.
+    times = iter([0.0, 0.0, 0.1, 0.2, 0.3, 1.1, 1.2, 1.8, 2.0])
+    monkeypatch.setattr(
+        "aistudio_api.infrastructure.gateway.session._stream_monotonic",
+        lambda: next(times),
+    )
+
+    async def scenario():
+        page = Page()
+        session = BrowserSession.__new__(BrowserSession)
+        session._prepare_streaming_sync = lambda: (
+            page,
+            "https://aistudio.google.com/GenerateContent",
+            {"content-type": "application/json"},
+        )
+        queue = asyncio.Queue()
+        session._send_streaming_request_sync(
+            "{}",
+            1000,
+            queue,
+            asyncio.get_running_loop(),
+            threading.Event(),
+        )
+        await asyncio.sleep(0)
+        assert len(page.cleanup_calls) == 1
+        assert page.cleanup_calls[0]["abort"] is False
+        assert "xhr.timeout = 0" in page.setup_script
+        assert await queue.get() == ("status", 200)
+        assert await queue.get() == ("chunk", b"still working")
+        assert await queue.get() is None
+
+    asyncio.run(scenario())
+
+
+def test_streaming_gateway_preserves_pre_response_transport_error():
+    class Session:
+        async def send_streaming_request(self, **_kwargs):
+            if False:
+                yield None
+            raise RuntimeError("streaming request timeout: no response status after 120s")
+
+    captured = CapturedRequest(
+        url="https://aistudio.google.com/GenerateContent",
+        headers={"content-type": "application/json"},
+        body='["models/original",[[[[null,"old"]],"user"]],null,[null,null,null,128,0.5,0.8,16],"!snap",null,null]',
+    )
+
+    async def scenario():
+        with pytest.raises(RequestError) as caught:
+            _ = [
+                event
+                async for event in StreamingGateway(Session()).stream_chat(
+                    captured=captured,
+                    model="models/gemini-3.5-flash",
+                    system_instruction=None,
+                )
+            ]
+        assert caught.value.status == 0
+        assert "no response status after 120s" in str(caught.value)
 
     asyncio.run(scenario())
 

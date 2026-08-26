@@ -371,12 +371,14 @@ def _build_streaming_response(
                             tools=tools,
                             force_refresh_capture=stream_attempt > 0,
                         ):
-                            has_yielded_data = True
                             if event_type == "body" and text:
+                                has_yielded_data = True
                                 yield sse_chunk(chat_id, model, text, include_usage=include_usage)
                             elif event_type == "thinking" and text:
+                                has_yielded_data = True
                                 yield sse_chunk(chat_id, model, "", thinking=text, include_usage=include_usage)
                             elif event_type == "tool_calls" and text:
+                                has_yielded_data = True
                                 saw_tool_calls = True
                                 openai_tool_calls = to_openai_tool_calls(
                                     text if isinstance(text, list) else [],
@@ -392,6 +394,10 @@ def _build_streaming_response(
                                 )
                             elif event_type == "usage":
                                 final_usage = text if isinstance(text, dict) else None
+                        # The pool observes this flag while __aexit__ returns
+                        # the worker. Mark success before leaving the lease so
+                        # streamed accounts become verified and reusable.
+                        execution.succeeded = True
                         break
                     except UsageLimitExceeded:
                         runtime_state.record(model, "rate_limited")
@@ -410,13 +416,15 @@ def _build_streaming_response(
                         )
                         if retry_reason is not None:
                             logger.warning(
-                                "Stream 捕获模板失效（%s），清理缓存后重试 %d/%d",
+                                "Stream 请求可恢复失败（%s），清理缓存后重试 %d/%d",
                                 retry_reason,
                                 stream_attempt + 1,
                                 MAX_RETRIES,
                             )
                             stream_client.clear_snapshot_cache()
-                            if retry_reason == "ambiguous_service" and account_id:
+                            if retry_reason == "transport":
+                                mark_request_worker_unhealthy(execution.worker_id)
+                            if retry_reason in {"ambiguous_service", "transport"} and account_id:
                                 attempted_accounts.add(account_id)
                             continue
                         raise
@@ -428,7 +436,6 @@ def _build_streaming_response(
                             continue
                         raise
 
-            execution.succeeded = True
             record_rotator_event("success", account_id)
             runtime_state.record(model, "success", final_usage)
             yield sse_chunk(chat_id, model, "", finish="tool_calls" if saw_tool_calls else "stop", include_usage=include_usage)

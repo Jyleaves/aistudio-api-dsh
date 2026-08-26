@@ -25,7 +25,7 @@ from aistudio_api.application.api_service_gemini import handle_gemini_generate_c
 from aistudio_api.application.api_service_openai import handle_chat
 from aistudio_api.application.account_rotator import AccountRotator
 from aistudio_api.application.request_client_pool import RequestClientPool
-from aistudio_api.domain.errors import AuthError, UsageLimitExceeded
+from aistudio_api.domain.errors import AuthError, RequestError, UsageLimitExceeded
 from aistudio_api.domain.models import Candidate, ModelOutput
 from aistudio_api.infrastructure.account.account_store import AccountStore
 
@@ -696,6 +696,51 @@ def test_rate_limit_retry_moves_only_current_request_to_another_account(tmp_path
 
         response, ready_accounts = await _with_runtime_pool(pool, operation)
         assert response.choices[0].message.content.startswith(account_ids[1])
+        assert calls[:2] == account_ids
+        assert ready_accounts == {account_ids[1]}
+
+    asyncio.run(scenario())
+
+
+def test_navigation_context_failure_discards_worker_and_switches_account(tmp_path):
+    async def scenario():
+        store = _create_store(tmp_path, count=2)
+        account_ids = [account.id for account in store.list_accounts()]
+        calls: list[str] = []
+        tracker = _Tracker()
+
+        class NavigationClient(_FakeClient):
+            async def stream_generate_content(self, **_kwargs):
+                calls.append(self.account_id)
+                if self.account_id == account_ids[0]:
+                    raise RequestError(
+                        0,
+                        "Execution context was destroyed, most likely because of a navigation",
+                    )
+                yield "body", f"recovered:{self.account_id}"
+
+        pool = RequestClientPool(
+            store,
+            max_concurrency=2,
+            port=9222,
+            client_factory=lambda _auth, _profile, account_id: NavigationClient(
+                account_id, tracker, []
+            ),
+        )
+        request = ChatRequest(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "retry after navigation"}],
+            stream=True,
+            tools=[],
+        )
+
+        async def operation():
+            response = await handle_chat(request, object())
+            body = "".join([chunk async for chunk in response.body_iterator])
+            return body, set(pool.ready_account_ids)
+
+        body, ready_accounts = await _with_runtime_pool(pool, operation)
+        assert f"recovered:{account_ids[1]}" in body
         assert calls[:2] == account_ids
         assert ready_accounts == {account_ids[1]}
 

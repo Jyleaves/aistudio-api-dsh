@@ -42,6 +42,19 @@ def capture_retry_reason(
     if error.status == 204 and attempt == 0:
         return "empty_response"
     message = str(error)
+    if error.status == 0 and any(
+        marker in message.lower()
+        for marker in (
+            "timeout",
+            "network error",
+            "before an http response",
+            "execution context was destroyed",
+            "cannot find context with specified id",
+            "frame was detached",
+            "target page, context or browser has been closed",
+        )
+    ):
+        return "transport"
     if (
         error.status == 404
         and "Ambiguous request for service" in message

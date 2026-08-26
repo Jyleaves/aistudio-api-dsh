@@ -130,6 +130,27 @@ def test_capture_retry_classification_is_narrow():
     assert capture_retry_reason(ambiguous, attempt=0, has_yielded_data=True) is None
     assert capture_retry_reason(ambiguous, attempt=MAX_RETRIES - 1, has_yielded_data=False) is None
     assert capture_retry_reason(RequestError(404, "Not found"), attempt=0, has_yielded_data=False) is None
+    assert capture_retry_reason(
+        RequestError(0, "streaming request timeout: no response status after 120s"),
+        attempt=0,
+        has_yielded_data=False,
+    ) == "transport"
+    assert capture_retry_reason(
+        RequestError(0, "streaming request timeout: no response status after 120s"),
+        attempt=0,
+        has_yielded_data=True,
+    ) is None
+    assert capture_retry_reason(
+        RequestError(0, "Execution context was destroyed, most likely because of a navigation"),
+        attempt=0,
+        has_yielded_data=False,
+    ) == "transport"
+    assert capture_retry_reason(
+        RequestError(0, "Target page, context or browser has been closed"),
+        attempt=0,
+        has_yielded_data=False,
+    ) == "transport"
+    assert capture_retry_reason(RequestError(0, "unknown failure"), attempt=0, has_yielded_data=False) is None
 
 
 def test_gemini_stream_retries_ambiguous_capture_404_before_output(monkeypatch):

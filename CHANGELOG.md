@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-08-26
+
+### Added
+
+- Add a verified release-package updater for dsh-gemini-aistudio with download
+  progress, resumable retries, SHA-256 validation, local caching, and a
+  persistent diagnostic log.
+
+### Changed
+
+- Install companion-plugin updates from a named local tarball instead of a Git
+  checkout, while preserving the pnpm store already associated with the user's
+  dsh profile and continuing to honor Asteria, environment, and system proxies.
+- Treat the configured stream timeout as an inactivity limit that resets when
+  an HTTP status or response chunk arrives, allowing healthy long-running
+  Gemini tasks to continue without a fixed total-duration cutoff.
+
+### Fixed
+
+- Prevent plugin updates from waiting indefinitely or ending with an opaque
+  download failure when GitHub source cloning is slow, dsh is still running,
+  the pnpm store moved, or Windows holds plugin files open.
+- Retry pre-output browser navigation failures such as `Execution context was
+  destroyed` on a fresh worker and another available account instead of ending
+  the dsh stream immediately.
+- Mark successful OpenAI-, Gemini-, and Anthropic-compatible streaming workers
+  as verified before returning them to the pool, so automatic account failover
+  is reflected correctly in the Asteria account list and remains reusable.
+
 ## [1.0.7] - 2026-08-26
 
 ### Added
@@ -208,7 +237,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject incremental update packages when the SHA-256 checksum is missing or
   does not match the downloaded file.
 
-[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.7...HEAD
+[Unreleased]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.8...HEAD
+[1.0.8]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/Jyleaves/aistudio-api-dsh/compare/v1.0.4...v1.0.5

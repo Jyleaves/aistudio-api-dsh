@@ -267,6 +267,7 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                             if payload is not None:
                                 has_yielded_data = True
                                 yield payload
+                        execution.succeeded = True
                         break
                     except UsageLimitExceeded:
                         runtime_state.record(normalized["model"], "rate_limited")
@@ -289,13 +290,15 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                         )
                         if retry_reason is not None:
                             logger.warning(
-                                "Gemini stream 捕获模板失效（%s），清理缓存后重试 %d/%d",
+                                "Gemini stream 请求可恢复失败（%s），清理缓存后重试 %d/%d",
                                 retry_reason,
                                 stream_attempt + 1,
                                 MAX_RETRIES,
                             )
                             stream_client.clear_snapshot_cache()
-                            if retry_reason == "ambiguous_service" and account_id:
+                            if retry_reason == "transport":
+                                mark_request_worker_unhealthy(execution.worker_id)
+                            if retry_reason in {"ambiguous_service", "transport"} and account_id:
                                 attempted_accounts.add(account_id)
                             continue
                         raise
@@ -307,7 +310,6 @@ def _build_gemini_streaming_response(*, client: AIStudioClient, normalized: dict
                             continue
                         raise
 
-            execution.succeeded = True
             record_rotator_event("success", account_id)
             runtime_state.record(normalized["model"], "success", final_usage)
             if final_usage:

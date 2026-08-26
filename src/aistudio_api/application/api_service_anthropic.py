@@ -447,6 +447,7 @@ def _build_anthropic_streaming_response(
                                     )
                             elif event_type == "usage":
                                 final_usage = text if isinstance(text, dict) else None
+                        execution.succeeded = True
                         break
                     except UsageLimitExceeded as exc:
                         runtime_state.record(model, "rate_limited")
@@ -465,13 +466,15 @@ def _build_anthropic_streaming_response(
                         )
                         if retry_reason is not None:
                             logger.warning(
-                                "Anthropic stream 捕获模板失效（%s），清理缓存后重试 %d/%d",
+                                "Anthropic stream 请求可恢复失败（%s），清理缓存后重试 %d/%d",
                                 retry_reason,
                                 stream_attempt + 1,
                                 MAX_RETRIES,
                             )
                             stream_client.clear_snapshot_cache()
-                            if retry_reason == "ambiguous_service" and account_id:
+                            if retry_reason == "transport":
+                                mark_request_worker_unhealthy(execution.worker_id)
+                            if retry_reason in {"ambiguous_service", "transport"} and account_id:
                                 attempted_accounts.add(account_id)
                             continue
                         raise
@@ -533,7 +536,6 @@ def _build_anthropic_streaming_response(
                         {"type": "content_block_stop", "index": text_block_index},
                     )
 
-                execution.succeeded = True
                 record_rotator_event("success", account_id)
                 runtime_state.record(model, "success", final_usage)
                 yield anthropic_sse(

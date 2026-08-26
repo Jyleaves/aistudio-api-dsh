@@ -122,36 +122,41 @@ class StreamingGateway:
         raw_parts: list[str] = []
         status_code = 0
 
-        async for event_type, payload in self._session.send_streaming_request(
-            body=modified_body,
-            timeout_ms=settings.timeout_stream * 1000,
-        ):
-            if event_type == "status" and payload and not status_code:
-                status_code = int(payload)
-            elif event_type == "chunk" and payload:
-                text_payload = payload.decode("utf-8", errors="replace")
-                raw_parts.append(text_payload)
-                for parsed_chunk in parser.feed(text_payload):
-                    usage = parse_chunk_usage(parsed_chunk)
-                    if usage:
-                        latest_usage = usage
-                    candidate = parse_response_chunk(parsed_chunk)
-                    if candidate.thinking:
-                        yield ("thinking", candidate.thinking)
-                    if candidate.reasoning_images:
-                        yield ("reasoning_images", candidate.reasoning_images)
-                    if candidate.function_calls:
-                        yield ("tool_calls", candidate.function_calls)
-                    if candidate.images:
-                        yield ("images", candidate.images)
-                    if candidate.text:
-                        yield ("body", candidate.text)
-                    if candidate.grounding_metadata:
-                        yield ("grounding_metadata", candidate.grounding_metadata)
-                    if candidate.url_context_metadata:
-                        yield ("url_context_metadata", candidate.url_context_metadata)
-                    if candidate.thought_signature:
-                        yield ("thought_signature", candidate.thought_signature)
+        try:
+            async for event_type, payload in self._session.send_streaming_request(
+                body=modified_body,
+                timeout_ms=settings.timeout_stream * 1000,
+            ):
+                if event_type == "status" and payload and not status_code:
+                    status_code = int(payload)
+                elif event_type == "chunk" and payload:
+                    text_payload = payload.decode("utf-8", errors="replace")
+                    raw_parts.append(text_payload)
+                    for parsed_chunk in parser.feed(text_payload):
+                        usage = parse_chunk_usage(parsed_chunk)
+                        if usage:
+                            latest_usage = usage
+                        candidate = parse_response_chunk(parsed_chunk)
+                        if candidate.thinking:
+                            yield ("thinking", candidate.thinking)
+                        if candidate.reasoning_images:
+                            yield ("reasoning_images", candidate.reasoning_images)
+                        if candidate.function_calls:
+                            yield ("tool_calls", candidate.function_calls)
+                        if candidate.images:
+                            yield ("images", candidate.images)
+                        if candidate.text:
+                            yield ("body", candidate.text)
+                        if candidate.grounding_metadata:
+                            yield ("grounding_metadata", candidate.grounding_metadata)
+                        if candidate.url_context_metadata:
+                            yield ("url_context_metadata", candidate.url_context_metadata)
+                        if candidate.thought_signature:
+                            yield ("thought_signature", candidate.thought_signature)
+        except RuntimeError as exc:
+            # Preserve transport details so callers can safely distinguish a
+            # retryable pre-output failure from an upstream HTTP response.
+            raise RequestError(0, str(exc)) from exc
 
         raw_response = "".join(raw_parts)
         _dump_stream_exchange(
@@ -167,7 +172,9 @@ class StreamingGateway:
                 raise classify_error(status_code, raw_response)
             if detail:
                 raise RequestError(status_code, detail)
-            raise RequestError(status_code, "")
+            if status_code == 0:
+                raise RequestError(0, "upstream stream ended before an HTTP response was received")
+            raise RequestError(status_code, "empty upstream error response")
 
         yield ("usage", latest_usage)
         yield ("done", None)

@@ -15,7 +15,7 @@
       <div class="logo">A</div>
       <div class="brand-lockup">
         <span class="brand-name">Asteria</span>
-        <span class="brand-version" x-text="`v${appVersion}`">v1.0.7</span>
+        <span class="brand-version" x-text="`v${appVersion}`">v1.0.8</span>
       </div>
     </div>
     <div class="nav-section">
@@ -623,6 +623,7 @@
               <div class="update-meta" x-show="pluginUpdateInfo.checked" x-cloak>
                 <span>当前版本 <b x-text="pluginUpdateInfo.current || '未安装'"></b></span>
                 <span x-show="pluginUpdateInfo.latest">最新版本 <b x-text="pluginUpdateInfo.latest"></b></span>
+                <span x-show="pluginUpdateInfo.asset_size">更新包 <b x-text="fmtBytes(pluginUpdateInfo.asset_size)"></b></span>
                 <span x-show="pluginUpdateInfo.proxy_label">网络 <b x-text="pluginUpdateInfo.proxy_label"></b></span>
               </div>
               <template x-if="!pluginUpdateInfo.checked"><span>检查已安装插件与 GitHub Release 的版本。</span></template>
@@ -630,9 +631,11 @@
               <template x-if="pluginUpdateInfo.checked && !pluginUpdateInfo.error && pluginUpdateInfo.status === 'not_installed'"><span>未检测到 dsh-gemini-aistudio，Asteria 不会擅自安装新插件。</span></template>
               <template x-if="pluginUpdateInfo.checked && !pluginUpdateInfo.error && pluginUpdateInfo.status === 'development'"><span>当前插件来自本地开发链接，请在源码仓库更新，Asteria 不会覆盖本地修改。</span></template>
               <template x-if="pluginUpdateInfo.checked && !pluginUpdateInfo.error && pluginUpdateInfo.status === 'latest'"><span>插件已经是最新版本。</span></template>
-              <template x-if="pluginUpdateInfo.checked && !pluginUpdateInfo.error && pluginUpdateInfo.status === 'available'"><span>发现插件新版本 <b x-text="pluginUpdateInfo.latest"></b>，将通过 dsh 官方插件命令更新。</span></template>
-              <template x-if="pluginUpdateInfo.status === 'updating'"><div class="update-progress"><div class="update-progress-label"><span>正在下载并安装插件…</span><b class="status-spinner compact-spinner"></b></div></div></template>
+              <template x-if="pluginUpdateInfo.checked && !pluginUpdateInfo.error && pluginUpdateInfo.status === 'available'"><span>发现插件新版本 <b x-text="pluginUpdateInfo.latest"></b>。Asteria 将下载并校验发布包，再通过 dsh 官方命令从本地安装。</span></template>
+              <template x-if="['downloading','verifying','installing'].includes(pluginUpdateInfo.status)"><div class="update-progress"><div class="update-progress-label"><span x-text="pluginUpdateInfo.message || '正在更新插件'"></span><b x-text="pluginUpdateInfo.progress + '%'">0%</b></div><div class="progress-track"><div class="progress-fill" :style="`width:${pluginUpdateInfo.progress}%`"></div></div><div class="update-bytes" x-show="pluginUpdateInfo.downloaded_bytes" x-text="fmtBytes(pluginUpdateInfo.downloaded_bytes) + (pluginUpdateInfo.asset_size ? ' / ' + fmtBytes(pluginUpdateInfo.asset_size) : '')"></div></div></template>
+              <template x-if="pluginUpdateInfo.status === 'blocked'"><div class="update-progress"><span x-text="pluginUpdateInfo.message"></span></div></template>
               <template x-if="pluginUpdateInfo.status === 'updated'"><div class="update-progress success-text" x-text="pluginUpdateInfo.message"></div></template>
+              <div class="update-bytes" x-show="pluginUpdateInfo.error && pluginUpdateInfo.log_path" x-text="'日志：' + pluginUpdateInfo.log_path"></div>
             </div>
           </div>
           </div>

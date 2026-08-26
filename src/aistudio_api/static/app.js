@@ -7,9 +7,9 @@ function app() {
     accounts: [], accountMetrics: {}, activeId: '', activeAccount: {},
     apiKeys: [], apiKeysRequestId: 0, apiKeyReveal: { open: false, name: '', key: '' },
     apiKeyCreate: { open: false, name: '', saving: false },
-    appVersion: '1.0.7',
-    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.7', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
-    pluginUpdateInfo: { checking: false, updating: false, checked: false, installed: false, managed: false, available: false, status: 'idle', current: '', latest: '', message: '', error: '', proxy_mode: 'direct', proxy_label: '直连', restart_required: false },
+    appVersion: '1.0.8',
+    updateInfo: { checking: false, updating: false, checked: false, available: false, status: 'idle', progress: 0, current: '1.0.8', latest: '', asset_size: 0, downloaded_bytes: 0, resumed: false, message: '', error: '' },
+    pluginUpdateInfo: { checking: false, updating: false, checked: false, installed: false, managed: false, available: false, status: 'idle', current: '', latest: '', message: '', error: '', progress: 0, asset_name: '', asset_size: 0, downloaded_bytes: 0, proxy_mode: 'direct', proxy_label: '直连', restart_required: false, log_path: '' },
     settings: {}, settingsSaving: false,
     models: [], model: '',
     auth: { token: '' },
@@ -471,16 +471,17 @@ function app() {
       } catch (e) { this.updateInfo.updating = false; this.showToast('更新进程启动失败'); }
     },
     async waitForPluginUpdate() {
-      for (let i = 0; i < 400; i++) {
+      for (let i = 0; i < 480; i++) {
         const r = await this.apiFetch(`/update/plugin/status?t=${Date.now()}`, { cache: 'no-store' });
         const d = await r.json().catch(() => ({}));
         this.pluginUpdateInfo = { ...this.pluginUpdateInfo, ...d, checked: true };
         if (d.status === 'updated') { this.showToast('插件更新完成，重启 dsh 后生效'); return true; }
+        if (d.status === 'blocked') { this.showToast(d.message || '请关闭 dsh 后再次更新'); return false; }
         if (d.status === 'error') { this.showToast(d.error || '插件更新失败'); return false; }
         await new Promise(resolve => setTimeout(resolve, 750));
       }
       this.pluginUpdateInfo.updating = false;
-      this.showToast('插件更新超时，请稍后检查版本');
+      this.showToast('插件更新状态等待超时，请查看插件更新日志');
       return false;
     },
     async startPluginUpdate() {
